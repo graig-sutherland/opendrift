@@ -3,6 +3,7 @@ channels:
   - opendrift
   - conda-forge
   - NOAA-ORR-ERD
+  - defaults
 dependencies:
   - python>=3.7
   - matplotlib>=3.1
