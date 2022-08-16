@@ -1,16 +1,24 @@
 version: 2.1
 
-orbs:
-  docker-publish: circleci/docker@1.7.0
+# orbs:
+#   docker-publish: circleci/docker@1.7.0
 
 commands:
   run_tests:
+    parameters:
+      mpl:
+        description: "Enable plot comparison tests"
+        type: boolean
+        default: true
+
     steps:
       - run:
           name: Run tests
           command: |
+            [[ "<<parameters.mpl>>" == "true" ]] && export MPL="--mpl"
+
             source activate opendrift
-            pytest --circleci-parallelize --junitxml=test-results/junit.xml --cov=opendrift --ignore=tests/benchmarks --ignore=tests/wps --run-slow --durations=50 --benchmark-disable -v --log-cli-level=debug
+            pytest --circleci-parallelize --junitxml=test-results/junit.xml --cov=opendrift --ignore=tests/benchmarks --ignore=tests/wps --run-slow $MPL --durations=50 --benchmark-disable -v --log-cli-level=debug
 
       - store_test_results:
           path: test-results
@@ -33,11 +41,10 @@ commands:
           name: Checksum environment
           command: |
             echo "python=${PYTHON_VERSION}" > envconfig
-            echo "numpy=${NUMPY_VERSION}" >> envconfig
             cat envconfig
 
       - restore_cache:
-          key: v16-deps1-{{ checksum "environment.yml" }}-{{ checksum "envconfig" }}
+          key: v18-deps1-{{ checksum "environment.yml" }}-{{ checksum "envconfig" }}
 
       - run:
           name: Install requirements
@@ -45,11 +52,12 @@ commands:
           command: |
             if [ ! -e /opt/conda/envs/opendrift ]; then
               if [ -v PYTHON_VERSION ]; then
-                # pin python and numpy
-                conda create -c conda-forge -n opendrift -q -y "python==${PYTHON_VERSION}" "numpy==${NUMPY_VERSION}"
+                echo "Pinning python: ${PYTHON_VERSION}."
+                # pin python
+                conda create -c conda-forge -n opendrift -q -y "python=${PYTHON_VERSION}"
 
-                echo "python ${PYTHON_VERSION}" > /opt/conda/envs/opendrift/conda-meta/pinned
-                echo "numpy ${NUMPY_VERSION}"  >> /opt/conda/envs/opendrift/conda-meta/pinned
+                echo "python ${PYTHON_VERSION}.*" > /opt/conda/envs/opendrift/conda-meta/pinned
+                cat /opt/conda/envs/opendrift/conda-meta/pinned
 
                 conda env update -n opendrift -q -f environment.yml
               else
@@ -62,7 +70,7 @@ commands:
             fi
 
       - save_cache:
-          key: v16-deps1-{{ checksum "environment.yml" }}-{{ checksum "envconfig" }}
+          key: v18-deps1-{{ checksum "environment.yml" }}-{{ checksum "envconfig" }}
           paths:
             - "/opt/conda/envs"
       - run:
@@ -80,7 +88,7 @@ commands:
           name: Download cartopy shapes
           command: |
             source activate opendrift
-            python -c "import cartopy;list(map(cartopy.io.shapereader.gshhs, ('c', 'l', 'i', 'h', 'f')))"
+            python -c "import cartopy; list(map(cartopy.io.shapereader.gshhs, ('c', 'l', 'i', 'h', 'f')))"
             python -c "import cartopy; cartopy.io.shapereader.natural_earth(resolution='110m', category='cultural', name='admin_0_countries')"
 
       - save_cache:
@@ -98,8 +106,57 @@ test-template: &test-template
 
     - install_conda_environment
 
+    - install_cartopy_shapes
+
+    - run_tests:
+        mpl: true
+
+jobs:
+  python_310:
+    <<: *test-template
+    parallelism: 5
+    environment:
+      - COVERALLS_UPLOAD=1
+      - PYTHON_VERSION=3.10
+
+  python_39:
+    <<: *test-template
+    parallelism: 5
+    environment:
+      - PYTHON_VERSION=3.9
+
+  python_38:
+    <<: *test-template
+    parallelism: 5
+    environment:
+      - PYTHON_VERSION=3.8
+
+  python_37:
+    <<: *test-template
+    parallelism: 5
+    environment:
+      - PYTHON_VERSION=3.7
+
+  python_310_o_l_d:
+    docker:
+      - image: continuumio/miniconda3
+    parallelism: 5
+    environment:
+      - PYTHON_VERSION=3.10
+    steps:
+    - checkout
+
+    - install_conda_environment
+
+    - run:
+        name: Install opendrift-landmask-data and remove roaring-landmask
+        command: |
+          source activate opendrift
+          conda install -y -c conda-forge -c opendrift opendrift-landmask-data
+          pip uninstall -y roaring-landmask
+
     - restore_cache:
-        key: v1-landmask
+        key: v2-landmask
 
     - run:
         name: Generate landmask
@@ -107,61 +164,15 @@ test-template: &test-template
           source activate opendrift
           python -c 'import opendrift_landmask_data as old; old.Landmask()'
 
-    - install_cartopy_shapes
-
     - save_cache:
-        key: v1-landmask
+        key: v2-landmask
         paths:
           - "/tmp/landmask"
 
-    - run_tests
-
-jobs:
-  python_latest:
-    <<: *test-template
-    parallelism: 5
-    environment:
-      - COVERALLS_UPLOAD=1
-
-  python_38_numpy_119:
-    <<: *test-template
-    parallelism: 5
-    environment:
-      - PYTHON_VERSION=3.8
-      - NUMPY_VERSION=1.19
-
-  python_37_numpy_117:
-    <<: *test-template
-    parallelism: 5
-    environment:
-      - PYTHON_VERSION=3.7
-      - NUMPY_VERSION=1.17
-
-  python_latest_roaring:
-    docker:
-      - image: continuumio/miniconda3
-    resource_class: medium+
-    parallelism: 5
-    steps:
-    - checkout
-
-    - install_conda_environment
-
     - install_cartopy_shapes
 
-    - run:
-        name: Install roaring-landmask
-        command: |
-            source activate opendrift
-            pip install -v roaring_landmask
-
-    - run:
-        name: Remove Opendrift Landmask Data
-        command: |
-            source activate opendrift
-            conda remove --force -y opendrift-landmask-data
-
-    - run_tests
+    - run_tests:
+        mpl: false
 
   docs-build-examples:
     docker:
@@ -190,18 +201,6 @@ jobs:
       - install_conda_environment
 
       - install_cartopy_shapes
-
-      - run:
-          name: Install roaring-landmask
-          command: |
-                source activate opendrift
-                pip install -v roaring_landmask
-
-      - run:
-          name: Remove Opendrift Landmask Data
-          command: |
-                source activate opendrift
-                conda remove --force -y opendrift-landmask-data
 
       - run:
           name: Install sphinx and friends
@@ -399,10 +398,11 @@ workflows:
 
   test:
     jobs:
-      - python_latest
-      - python_38_numpy_119
-      - python_37_numpy_117
-      - python_latest_roaring
+      - python_310
+      - python_39
+      - python_38
+      - python_37
+      - python_310_o_l_d
 
   docs:
     jobs:
@@ -420,25 +420,25 @@ workflows:
              only: master
 
   # This workflow will deploy images on merge to master only
-  build-and-publish-docker-image:
-    jobs:
+  # build-and-publish-docker-image:
+  #   jobs:
 
-      - docker-publish/publish:
-          image: opendrift/opendrift
-          dockerfile: Dockerfile
-          tag: latest
-          filters:
-            branches:
-             only: master
-          after_build:
-            - run:
-                name: Publish Docker Containers with Python Version 3
-                command: |
-                   # Here we preview the Docker Tag
-                   pushd opendrift
-                   DOCKER_TAG=$(python -c 'import version; print(version.__version__)')
-                   popd
+  #     - docker-publish/publish:
+  #         image: opendrift/opendrift
+  #         dockerfile: Dockerfile
+  #         tag: latest
+  #         filters:
+  #           branches:
+  #            only: master
+  #         after_build:
+  #           - run:
+  #               name: Publish Docker Containers with Python Version 3
+  #               command: |
+  #                  # Here we preview the Docker Tag
+  #                  pushd opendrift
+  #                  DOCKER_TAG=$(python -c 'import version; print(version.__version__)')
+  #                  popd
 
-                   echo "Version for Docker tag is ${DOCKER_TAG}"
-                   docker tag opendrift/opendrift:latest opendrift/opendrift:v${DOCKER_TAG}
+  #                  echo "Version for Docker tag is ${DOCKER_TAG}"
+  #                  docker tag opendrift/opendrift:latest opendrift/opendrift:v${DOCKER_TAG}
 

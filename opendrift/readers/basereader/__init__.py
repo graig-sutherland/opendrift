@@ -257,6 +257,8 @@ class BaseReader(Variables):
             x0 = (self.xmin + self.xmax) / 2
             y0 = (self.ymin + self.ymax) / 2
             lon0, lat0 = self.xy2lonlat(x0, y0)
+            lon0 = lon0[0]
+            lat0 = lat0[0]
             sp = ccrs.Stereographic(central_longitude=lon0, central_latitude=lat0)
             latmax = np.maximum(latmax, lat0)
             latmin = np.minimum(latmin, lat0)
@@ -343,13 +345,12 @@ class BaseReader(Variables):
                 data[variable] = data[variable][0,:,:]
             if self.global_coverage():
                 mappable = ax.pcolormesh(rlon, rlat, data[variable], vmin=vmin, vmax=vmax,
-                                         transform=ccrs.PlateCarree(), shading='nearest')
+                                         transform=ccrs.PlateCarree())
             else:
                 p = sp.transform_points(ccrs.PlateCarree(), rlon, rlat)
                 mapx = p[:,:,0]
                 mapy = p[:,:,1]
-                mappable = ax.pcolormesh(mapx, mapy, data[variable], vmin=vmin, vmax=vmax,
-                                         shading='nearest')
+                mappable = ax.pcolormesh(mapx, mapy, data[variable], vmin=vmin, vmax=vmax)
 
             cbar = fig.colorbar(mappable, orientation='horizontal', pad=.05, aspect=30, shrink=.4)
             cbar.set_label(variable)

@@ -37,9 +37,9 @@ class Chemical(Lagrangian3DArray):
         ('diameter', {'dtype': np.float32,
                       'units': 'm',
                       'default': 0.}),
-        ('neutral_buoyancy_salinity', {'dtype': np.float32,
-                                       'units': '[]',
-                                       'default': 31.25}),  # for NEA Cod
+        #('neutral_buoyancy_salinity', {'dtype': np.float32,
+        #                               'units': '[]',
+        #                               'default': 31.25}),  # for NEA Cod
         ('density', {'dtype': np.float32,
                      'units': 'kg/m^3',
                      'default': 2650.}),  # Mineral particles
@@ -100,9 +100,11 @@ class ChemicalDrift(OceanDrift):
         'sea_water_temperature': {'fallback': 10, 'profiles': True},
         'sea_water_salinity': {'fallback': 34, 'profiles': True},
         'upward_sea_water_velocity': {'fallback': 0},
-        'conc3': {'fallback': 1.e-3},
+        #'conc3': {'fallback': 1.e-3},
         'spm': {'fallback': 50},
         'ocean_mixed_layer_thickness': {'fallback': 50},
+        'active_sediment_layer_thickness': {'fallback': 0.03}, # TODO - currently not used, redundant with 'chemical:sediment:mixing_depth'
+        'doc': {'fallback': 0.0}
         }
 
     # The depth range (in m) which profiles shall cover
@@ -138,12 +140,15 @@ class ChemicalDrift(OceanDrift):
             'chemical:particle_diameter': {'type': 'float', 'default': 5e-6,
                 'min': 0, 'max': 100e-6, 'units': 'm',
                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
+            'chemical:particle_concentration_half_depth': {'type': 'float', 'default': 20,
+                'min': 0, 'max': 100, 'units': 'm',
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 20,
+                'min': 0, 'max': 100, 'units': 'm',
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:particle_diameter_uncertainty': {'type': 'float', 'default': 1e-7,
                 'min': 0, 'max': 100e-6, 'units': 'm',
                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
-            'chemical:activity_per_element': {'type': 'float', 'default': 1,
-                'min': 0, 'max': 1e18, 'units': '',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'seed:LMM_fraction': {'type': 'float','default': .1,
                 'min': 0, 'max': 1, 'units': '',
                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
@@ -222,6 +227,18 @@ class ChemicalDrift(OceanDrift):
             'chemical:transformations:pKa_base': {'type': 'float', 'default': -1,
                 'min': 0, 'max': 14, 'units': '',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:transformations:KOC_DOM': {'type': 'float', 'default': -1,
+                'min': 1, 'max': 10000000000, 'units': 'L/KgOC',
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:transformations:KOC_sed': {'type': 'float', 'default': -1,
+                'min': 1, 'max': 10000000000, 'units': 'L/KgOC',
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:transformations:fOC_SPM': {'type': 'float', 'default': 0.05,
+                'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:transformations:fOC_sed': {'type': 'float', 'default': 0.05,
+                'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             # Degradation in water column
             'chemical:transformations:t12_W_tot': {'type': 'float', 'default': 224.08,      # Naphthalene
                 'min': 1, 'max': None, 'units': 'hours',
@@ -270,7 +287,7 @@ class ChemicalDrift(OceanDrift):
                 'min': -100000., 'max': 100000., 'units': 'J/mol',
                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': 'Enthalpy of solubilization'},
             # Sedimentation/Resuspension
-            'chemical:sediment:mixing_depth': {'type': 'float', 'default': 1,
+            'chemical:sediment:mixing_depth': {'type': 'float', 'default': 0.03,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:density': {'type': 'float', 'default': 2600,
@@ -303,6 +320,12 @@ class ChemicalDrift(OceanDrift):
             'chemical:sediment:resuspension_critvel': {'type': 'float', 'default': .01,
                 'min': 0, 'max': 1, 'units': 'm/s',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:sediment:burial_rate': {'type': 'float', 'default': .00003,   # MacKay
+                'min': 0, 'max': 10, 'units': 'm/year',
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
+                'min': 0, 'max': 10, 'units': 'm/year',
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             })
 
 
@@ -321,7 +344,17 @@ class ChemicalDrift(OceanDrift):
         logger.info('nspecies: %s' % self.nspecies)
         logger.info('Transfer rates:\n %s' % self.transfer_rates)
 
+        self.SPM_vertical_levels_given = False
+        for key, value in self.readers.items():
+            if 'spm' in value.variables:
+                if (hasattr(value,'sigma') or hasattr(value,'z') ):
+                    self.SPM_vertical_levels_given = True
 
+        self.DOC_vertical_levels_given = False
+        for key, value in self.readers.items():
+            if 'doc' in value.variables:
+                if (hasattr(value,'sigma') or hasattr(value,'z') ):
+                    self.DOC_vertical_levels_given = True
 
 
     def init_species(self):
@@ -438,7 +471,6 @@ class ChemicalDrift(OceanDrift):
             else:
                 lmm_frac = self.get_config('seed:LMM_fraction')
 
-            shift = int(num_elements * (1-particle_frac))
             if not lmm_frac + particle_frac == 1.:
                 logger.error('Fraction does not sum up to 1: %s' % str(lmm_frac+particle_frac) )
                 logger.error('LMM fraction: %s ' % str(lmm_frac))
@@ -446,18 +478,21 @@ class ChemicalDrift(OceanDrift):
                 raise ValueError('Illegal specie fraction combination : ' + str(lmm_frac) + ' '+ str(particle_frac) )
 
             init_specie = np.ones(num_elements, int)
+
+            dissolved=np.random.rand(num_elements)<lmm_frac
             if self.get_config('chemical:transfer_setup')=='Sandnesfj_Al':
-                init_specie[:shift] = self.num_lmmcation
+                init_specie[dissolved]=self.num_lmmcation
             else:
-                init_specie[:shift] = self.num_lmm
-            init_specie[shift:] = self.num_prev
+                init_specie[dissolved]=self.num_lmm
+            init_specie[~dissolved]=self.num_prev
+
 
             kwargs['specie'] = init_specie
 
 
-        logger.info('Initial partitioning:')
+        logger.debug('Initial partitioning:')
         for i,sp in enumerate(self.name_species):
-            logger.info( '{:>9} {:>3} {:24} '.format(  np.sum(init_specie==i), i, sp ) )
+            logger.debug( '{:>9} {:>3} {:24} '.format(  np.sum(init_specie==i), i, sp ) )
 
         # Set initial particle size
         if 'diameter' in kwargs:
@@ -549,8 +584,8 @@ class ChemicalDrift(OceanDrift):
             pKa_base   = self.get_config('chemical:transformations:pKa_base')
             pH_water   = 8.1
             pH_sed     = 6.9
-            fOC_SPM    = 0.05       # typical values from 0.01 to 0.1 gOC/g
-            fOC_sed    = 0.05       # typical values from 0.01 to 0.1 gOC/g
+            fOC_SPM    = self.get_config('chemical:transformations:fOC_SPM')
+            fOC_sed    = self.get_config('chemical:transformations:fOC_sed')
                                     # Question
                                     # Do we need separate fOC for SPM and Sed
             concDOM   = 1.e-3 / Org2C    # concentration of available dissolved organic matter (kg/m3)
@@ -565,13 +600,18 @@ class ChemicalDrift(OceanDrift):
             sed_phi     = self.get_config('chemical:sediment:corr_factor')      # sediment correction factor
             sed_poro    = self.get_config('chemical:sediment:porosity')         # sediment porosity
             sed_H       = self.get_config('chemical:sediment:layer_thickness')  # thickness of seabed interaction layer (m)
-
+            sed_burial  = self.get_config('chemical:sediment:burial_rate')      # sediment burial rate (m/y)
+            sed_leaking_rate = self.get_config( 'chemical:sediment:buried_leaking_rate')
 
             if diss=='nondiss':
-                KOC_DOM    = 2.88 * KOW**0.67   # (L/KgOC), Park and Clough, 2014
-                KOC_sed    = 2.62 * KOW**0.82   # (L/KgOC), Park and Clough, 2014 (334)/Org2C
-                KOC_SPM    = KOC_sed
-                #KOC_Sed    = 1.26 * kOW**0.81   # (L/KgOC),Ragas et al., 2019
+                KOC_DOM = self.get_config('chemical:transformations:KOC_DOM')
+                if KOC_DOM < 0:
+                    KOC_DOM = 2.88 * KOW**0.67   # (L/KgOC), Park and Clough, 2014
+                KOC_sed = self.get_config('chemical:transformations:KOC_sed')
+                if KOC_sed < 0:
+                    KOC_sed = 2.62 * KOW**0.82   # (L/KgOC), Park and Clough, 2014 (334)/Org2C
+                    #KOC_Sed    = 1.26 * kOW**0.81   # (L/KgOC),Ragas et al., 2019
+                KOC_SPM = KOC_sed
             else:
                 if diss=='acid':
                     Phi_n    = 1/(1 + 10**(pH-pKa_acid))
@@ -641,8 +681,13 @@ class ChemicalDrift(OceanDrift):
             self.transfer_rates[self.num_srev,self.num_lmm] = \
                 k_des_sed * sed_phi / TcorrSed / Scorr                                      # k41
 
-            self.transfer_rates[self.num_srev,self.num_ssrev] = slow_coeff                  # k46
-            self.transfer_rates[self.num_ssrev,self.num_srev] = slow_coeff*.1               # k64
+            #self.transfer_rates[self.num_srev,self.num_ssrev] = slow_coeff                  # k46
+            #self.transfer_rates[self.num_ssrev,self.num_srev] = slow_coeff*.1               # k64
+
+            # Using slowly reversible specie for burial - TODO buried sediment should be a new specie
+            self.transfer_rates[self.num_srev,self.num_ssrev] = sed_burial / sed_L / 31556926 # k46 (m/y) / m / (s/y) = s-1
+            self.transfer_rates[self.num_ssrev,self.num_srev] = sed_leaking_rate                # k64
+
 
             self.transfer_rates[self.num_humcol,self.num_prev] = 1.e-5      # k23, Salinity interval >20 psu
             self.transfer_rates[self.num_prev,self.num_humcol] = 0          # TODO check if valid for organics
@@ -933,8 +978,38 @@ class ChemicalDrift(OceanDrift):
                 # Updating sorption rates according to local SPM concentration
 
                 concSPM=self.environment.spm * 1e-6 # (Kg/L) from (g/m3) 
+
+                # Apply SPM concentration profile if SPM reader has not depth coordinate
+                # SPM concentration is kept constant to surface value in the mixed layer
+                # Exponentially decreasing with depth below the mixed layers
+
+                if not self.SPM_vertical_levels_given:
+                    lowerMLD = self.elements.z < -self.environment.ocean_mixed_layer_thickness
+                    #concSPM[lowerMLD] = concSPM[lowerMLD]/2
+                    concSPM[lowerMLD] = concSPM[lowerMLD] * np.exp(
+                        -(self.elements.z[lowerMLD]+self.environment.ocean_mixed_layer_thickness[lowerMLD])
+                        *np.log(0.5)/self.get_config('chemical:particle_concentration_half_depth')
+                        )
+
                 self.elements.transfer_rates1D[self.elements.specie==self.num_lmm,self.num_prev] = \
                     self.k_ads * concSPM[self.elements.specie==self.num_lmm]      # k13
+
+                concDOM = self.environment.doc * 12e-6 / 1.025 / 0.526 * 1e-3 # (Kg[OM]/L) from (umol[C]/Kg)
+
+                # Apply DOC concentration profile if DOC reader has not depth coordinate
+                # DOC concentration is kept constant to surface value in the mixed layer
+                # Exponentially decreasing with depth below the mixed layers
+
+                if not self.DOC_vertical_levels_given:
+                    lowerMLD = self.elements.z < -self.environment.ocean_mixed_layer_thickness
+                    #concDOM[lowerMLD] = concDOM[lowerMLD]/2
+                    concDOM[lowerMLD] = concDOM[lowerMLD] * np.exp(
+                        -(self.elements.z[lowerMLD]+self.environment.ocean_mixed_layer_thickness[lowerMLD])
+                        *np.log(0.5)/self.get_config('chemical:doc_concentration_half_depth')
+                        )
+
+                self.elements.transfer_rates1D[self.elements.specie==self.num_lmm,self.num_humcol] = \
+                    self.k_ads * concDOM[self.elements.specie==self.num_lmm]      # k14
 
 
             if self.get_config('chemical:species:Sediment_reversible'):
@@ -945,16 +1020,6 @@ class ChemicalDrift(OceanDrift):
                 dist_to_seabed = self.elements.z - Zmin
                 self.elements.transfer_rates1D[(self.elements.specie == self.num_lmm) &
                                  (dist_to_seabed > interaction_thick), self.num_srev] = 0.
-
-
-            if self.get_config('chemical:species:Particle_reversible'):
-                # Modify particle adsorption according to local particle concentration
-                # (LMM -> reversible particles)
-                kktmp = self.elements.specie == self.num_lmm
-                self.elements.transfer_rates1D[kktmp, self.num_prev] = \
-                            self.elements.transfer_rates1D[kktmp, self.num_prev] * \
-                            self.environment.conc3[kktmp] / 1.e-3
-        #                    self.environment.particle_conc[kktmp] / 1.e-3
 
         elif transfer_setup=='Sandnesfj_Al':
             sal = self.environment.sea_water_salinity
@@ -1177,6 +1242,8 @@ class ChemicalDrift(OceanDrift):
         bottom = (self.elements.z <= Zmin)
 
         resusp = ( (bottom) & (speed >= critvel) )
+        resusp = ( resusp & (self.elements.specie!=self.num_ssrev) )    # Prevent ssrev (buried) to be resuspended
+                                                                        # TODO buried sediment should be a new specie
         logger.info('Number of resuspended particles: {}'.format(np.sum(resusp)))
         self.elements.moving[resusp] = 1
 
@@ -1463,22 +1530,39 @@ class ChemicalDrift(OceanDrift):
 # ################
 # POSTPROCESSING
 
-
     def write_netcdf_chemical_density_map(self, filename, pixelsize_m='auto', zlevels=None,
                                               deltat=None,
                                               density_proj=None,
                                               llcrnrlon=None, llcrnrlat=None,
                                               urcrnrlon=None, urcrnrlat=None,
-                                              activity_unit=None,
+                                              mass_unit=None,
                                               time_avg_conc=False,
                                               horizontal_smoothing=False,
                                               smoothing_cells=0,
+                                              reader_sea_depth=None,
                                               ):
         '''Write netCDF file with map of Chemical species densities and concentrations'''
 
         from netCDF4 import Dataset, date2num #, stringtochar
 
         logger.info('Postprocessing: Write density and concentration to netcdf file')
+
+
+        self.conc_lon=reader_sea_depth.x
+        self.conc_lat=reader_sea_depth.y
+        self.conc_topo=reader_sea_depth.get_variables('sea_floor_depth_below_sea_level', x=[reader_sea_depth.xmin,reader_sea_depth.xmax], y=[reader_sea_depth.ymin,reader_sea_depth.ymax])['sea_floor_depth_below_sea_level'][:,:].transpose()
+        self.conc_topo=self.conc_topo[(self.conc_lon>llcrnrlon) & (self.conc_lon<urcrnrlon),:]
+        self.conc_topo=self.conc_topo[:,(self.conc_lat>llcrnrlat) & (self.conc_lat<urcrnrlat)]
+
+        self.conc_lon=self.conc_lon[(self.conc_lon>llcrnrlon) & (self.conc_lon<urcrnrlon)]
+        self.conc_lat=self.conc_lat[(self.conc_lat>llcrnrlat) & (self.conc_lat<urcrnrlat)]
+        self.conc_lat,self.conc_lon=np.meshgrid(self.conc_lat,self.conc_lon)
+
+        #Downsample if bathymetry file very large
+        #self.conc_topo=self.conc_topo[::10,::10]
+        #self.conc_lat=self.conc_lat[::10,::10]
+        #self.conc_lon=self.conc_lon[::10,::10]
+
 
         if pixelsize_m == 'auto':
             lon, lat = self.get_lonlats()
@@ -1503,11 +1587,8 @@ class ChemicalDrift(OceanDrift):
 
 
 
-        if activity_unit==None:
-            activity_unit='Bq'  # default unit for chemicals
-
-        activity_per_element = self.get_config('chemical:activity_per_element')
-
+        if mass_unit==None:
+            mass_unit='microgram'  # default unit for chemicals
 
         z = self.get_property('z')[0]
         if not zlevels==None:
@@ -1517,9 +1598,6 @@ class ChemicalDrift(OceanDrift):
             z_array = [min(-10000,np.nanmin(z)), max(0,np.nanmax(z))]
         logger.info('z_array: {}'.format(  [str(item) for item in z_array] ) )
 
-
-
-
         #
         # H is array containing number of elements within each box defined by lon_array, lat_array and z_array
 
@@ -1527,13 +1605,21 @@ class ChemicalDrift(OceanDrift):
             self.get_chemical_density_array(pixelsize_m, z_array,
                                                 density_proj=density_proj,
                                                 llcrnrlon=llcrnrlon, llcrnrlat=llcrnrlat,
-                                                urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat
-                                                )
+                                                urcrnrlon=urcrnrlon, urcrnrlat=urcrnrlat,
+                                                weight='mass')
 
+        # calculating center point for eacxh pixel
         lon_array = (lon_array[:-1,:-1] + lon_array[1:,1:])/2
         lat_array = (lat_array[:-1,:-1] + lat_array[1:,1:])/2
 
-
+        landmask = np.zeros_like(H[0,0,0,:,:])
+        #landmask = self.readers['shape'].__on_land__(lon_array,lat_array)
+        landmask = self.readers['global_landmask'].__on_land__(lon_array,lat_array)
+        Landmask=np.zeros_like(H)
+        for zi in range(len(z_array)-1):
+            for sp in range(self.nspecies):
+                for ti in range(H.shape[0]):
+                        Landmask[ti,sp,zi,:,:] = landmask
 
         if horizontal_smoothing:
             # Compute horizontally smoother field
@@ -1543,11 +1629,6 @@ class ChemicalDrift(OceanDrift):
                 for sp in range(self.nspecies):
                     for ti in range(H.shape[0]):
                         Hsm[ti,sp,zi,:,:] = self.horizontal_smooth(H[ti,sp,zi,:,:],n=smoothing_cells)
-
-
-
-        # Convert from density to concentration
-        logger.info('Activity: '+str(activity_per_element)+' '+ activity_unit+ ' per unit')
 
         # Compute mean depth and volume in each pixel grid cell
         pixel_mean_depth  =  self.get_pixel_mean_depth(lon_array, lat_array)
@@ -1565,25 +1646,34 @@ class ChemicalDrift(OceanDrift):
 
         pixel_volume[np.where(pixel_volume==0.)] = np.nan
 
+        # Compute mass of dry sediment in each pixel grid cell
+        sed_L       = self.get_config('chemical:sediment:mixing_depth')
+        sed_dens    = self.get_config('chemical:sediment:density')
+        sed_poro    = self.get_config('chemical:sediment:porosity')
+        pixel_sed_mass = (pixelsize_m**2 *sed_L)*(1-sed_poro)*sed_dens      # mass in kg
 
+        # TODO this should be multiplied for the fraction og grid cell are that is not on land
 
-
-
-        conc = np.zeros_like(H)
-        if horizontal_smoothing:
-            conc_sm = np.zeros_like(Hsm)
+        #conc = np.zeros_like(H)
+        #if horizontal_smoothing:
+        #    conc_sm = np.zeros_like(Hsm)
         for ti in range(H.shape[0]):
             for sp in range(self.nspecies):
-                conc[ti,sp,:,:,:] = H[ti,sp,:,:,:] / pixel_volume * activity_per_element
-                if horizontal_smoothing:
-                    conc_sm[ti,sp,:,:,:] = Hsm[ti,sp,:,:,:] / pixel_volume * activity_per_element
-
-
-
+                if not self.name_species[sp].startswith('Sed'):
+                    print('divide by volume')
+                    H[ti,sp,:,:,:] = H[ti,sp,:,:,:] / pixel_volume
+                    if horizontal_smoothing:
+                        Hsm[ti,sp,:,:,:] = Hsm[ti,sp,:,:,:] / pixel_volume
+                elif self.name_species[sp].startswith('Sed'):
+                    print('divide by mass')
+                    print(pixel_sed_mass)
+                    H[ti,sp,:,:,:] = H[ti,sp,:,:,:] / pixel_sed_mass
+                    if horizontal_smoothing:
+                        Hsm[ti,sp,:,:,:] = Hsm[ti,sp,:,:,:] / pixel_sed_mass
 
         times = np.array( self.get_time_array()[0] )
         if time_avg_conc:
-            conctmp = conc[:-1,:,:,:,:]
+            conctmp = H[:-1,:,:,:,:]
             cshape = conctmp.shape
             mdt =    np.mean(times[1:] - times[:-1])    # output frequency in opendrift output file
             if deltat==None:
@@ -1602,11 +1692,6 @@ class ChemicalDrift(OceanDrift):
             for ii in range(odt):
                 meantmp  = np.mean(conctmp[(ii*ndt):(ii+1)*ndt,:,:,:,:],axis=0)
                 mean_conc[ii,:,:,:,:] = meantmp
-
-
-
-
-
 
         nc = Dataset(filename, 'w')
         nc.createDimension('x', lon_array.shape[0])
@@ -1631,12 +1716,6 @@ class ChemicalDrift(OceanDrift):
         # Projection
         nc.createVariable('projection', 'i8')
         nc.variables['projection'].proj4 = density_proj.definition_string()
-
-        #
-        nc.createVariable('concfactor','f8')
-        nc.variables['concfactor'][:] = activity_per_element
-        nc.variables['concfactor'].long_name = 'Activity per unit element'
-        nc.variables['concfactor'].unit = activity_unit
 
         # Cell size
         nc.createVariable('cell_size','f8')
@@ -1670,62 +1749,63 @@ class ChemicalDrift(OceanDrift):
 
 
         # Density
-        nc.createVariable('density', 'i4',
-                          ('time','specie','depth','y', 'x'),fill_value=-999)
-        H = np.swapaxes(H, 3, 4).astype('i4')
-        H = np.ma.masked_where(H==0, H)
-        nc.variables['density'][:] = H
-        nc.variables['density'].long_name = 'Number of elements in grid cell'
-        nc.variables['density'].grid_mapping = 'projection'
-        nc.variables['density'].units = '1'
+        #nc.createVariable('density', 'i4',
+        #                  ('time','specie','depth','y', 'x'),fill_value=99999)
+        #H = np.swapaxes(H, 3, 4).astype('i4')
+        ##H = np.ma.masked_where(H==0, H)
+        #nc.variables['density'][:] = H
+        #nc.variables['density'].long_name = 'Number of elements in grid cell'
+        #nc.variables['density'].grid_mapping = 'projection'
+        #nc.variables['density'].units = '1'
 
 
-        if horizontal_smoothing:
-            nc.createVariable('density_smooth', 'f8',
-                              ('time','specie','depth','y', 'x'),fill_value=1.e36)
-            Hsm = np.swapaxes(Hsm, 3, 4).astype('f8')
-            #Hsm = np.ma.masked_where(Hsm==0, Hsm)
-            nc.variables['density_smooth'][:] = Hsm
-            nc.variables['density_smooth'].long_name = 'Horizontally smoothed number of elements in grid cell'
-            nc.variables['density_smooth'].comment = 'Smoothed over '+str(smoothing_cells)+' grid points in all horizontal directions'
+        #if horizontal_smoothing:
+        #    nc.createVariable('density_smooth', 'f8',
+        #                      ('time','specie','depth','y', 'x'),fill_value=1.e36)
+        #    Hsm = np.swapaxes(Hsm, 3, 4).astype('f8')
+        #    #Hsm = np.ma.masked_where(Hsm==0, Hsm)
+        #    nc.variables['density_smooth'][:] = Hsm
+        #    nc.variables['density_smooth'].long_name = 'Horizontally smoothed number of elements in grid cell'
+        #    nc.variables['density_smooth'].comment = 'Smoothed over '+str(smoothing_cells)+' grid points in all horizontal directions'
 
+
+
+        # Chemical concentration
+        if 0:
+            nc.createVariable('concentration', 'f8',
+                          ('time','specie','depth','y', 'x'),fill_value=1.e36)
+            H = np.ma.masked_where(Landmask==1,H)
+            H = np.swapaxes(H, 3, 4) #.astype('i4')
+            nc.variables['concentration'][:] = H
+            nc.variables['concentration'].long_name = 'Chemical concentration'
+            nc.variables['concentration'].grid_mapping = 'projection_lonlat'
+            nc.variables['concentration'].units = mass_unit+'/m3'
 
 
         # Chemical concentration, horizontally smoothed
-        nc.createVariable('concentration', 'f8',
-                          ('time','specie','depth','y', 'x'),fill_value=1.e36)
-        conc = np.swapaxes(conc, 3, 4) #.astype('i4')
-        #conc = np.ma.masked_where(conc==0, conc)
-        nc.variables['concentration'][:] = conc
-        nc.variables['concentration'].long_name = 'Chemical concentration'
-        nc.variables['concentration'].grid_mapping = 'projection_lonlat'
-        nc.variables['concentration'].units = activity_unit+'/m3'
-
-
-
         if horizontal_smoothing:
-            # Chemical concentration, horizontally smoothed
             nc.createVariable('concentration_smooth', 'f8',
                               ('time','specie','depth','y', 'x'),fill_value=1.e36)
-            conc_sm = np.swapaxes(conc_sm, 3, 4) #.astype('i4')
-          #  conc_sm = np.ma.masked_where(conc_sm==0, conc_sm)
-            nc.variables['concentration_smooth'][:] = conc_sm
+            Hsm = np.ma.masked_where(Landmask==1, Hsm)
+            Hsm = np.swapaxes(Hsm, 3, 4) #.astype('i4')
+            nc.variables['concentration_smooth'][:] = Hsm
             nc.variables['concentration_smooth'].long_name = 'Horizontally smoothed Chemical concentration'
             nc.variables['concentration_smooth'].grid_mapping = 'projection_lonlat'
-            nc.variables['concentration_smooth'].units = activity_unit+'/m3'
+            nc.variables['concentration_smooth'].units = mass_unit+'/m3'
             nc.variables['concentration_smooth'].comment = 'Smoothed over '+str(smoothing_cells)+' grid points in all horizontal directions'
 
 
-
+        # Chemical concentration, time averaged
         if time_avg_conc:
             nc.createVariable('concentration_avg', 'f8',
-                              ('avg_time','specie','depth','y', 'x'),fill_value=0)
+                              ('avg_time','specie','depth','y', 'x'),fill_value=+1.e36)
+            mean_conc = np.ma.masked_where(Landmask[0:odt,:,:,:,:]==1, mean_conc)
             conc2 = np.swapaxes(mean_conc, 3, 4) #.astype('i4')
-            conc2 = np.ma.masked_where(conc2==0, conc2)
+            #conc2 = np.ma.masked_where(landmask==1, conc2)
             nc.variables['concentration_avg'][:] = conc2
             nc.variables['concentration_avg'].long_name = 'Time averaged Chemical concentration'
             nc.variables['concentration_avg'].grid_mapping = 'projection_lonlat'
-            nc.variables['concentration_avg'].units = activity_unit+'/m3'
+            nc.variables['concentration_avg'].units = mass_unit+'/m3'+' ('+mass_unit+'/Kg)'
 
 
         # Volume of boxes
@@ -1741,13 +1821,23 @@ class ChemicalDrift(OceanDrift):
 
         # Topography
         nc.createVariable('topo', 'f8', ('y', 'x'),fill_value=0)
-        pixel_mean_depth = np.ma.masked_where(pixel_mean_depth==0, pixel_mean_depth)
+        pixel_mean_depth = np.ma.masked_where(landmask==1, pixel_mean_depth)
         nc.variables['topo'][:] = pixel_mean_depth.T
         nc.variables['topo'].long_name = 'Depth of grid point'
         nc.variables['topo'].grid_mapping = 'projection_lonlat'
         nc.variables['topo'].units = 'm'
 
+        # Binary mask
+        nc.createVariable('land', 'i4', ('y', 'x'),fill_value=-1)
+        #landmask = np.ma.masked_where(landmask==0, landmask)
+        nc.variables['land'][:] = np.swapaxes(landmask,0,1).astype('i4')
+        nc.variables['land'].long_name = 'Binary land mask'
+        nc.variables['land'].grid_mapping = 'projection_lonlat'
+        nc.variables['land'].units = 'm'
 
+        print(type(landmask))
+        print(landmask.data)
+        #print(landmask.mask)
         nc.close()
         logger.info('Wrote to '+filename)
 
@@ -1810,7 +1900,7 @@ class ChemicalDrift(OceanDrift):
                     kktmp = ( (specie[i,:]==sp) & (z[i,:]>z_array[zi]) & (z[i,:]<=z_array[zi+1]) )
                     H[i,sp,zi,:,:], dummy, dummy = \
                         np.histogram2d(x[i,kktmp], y[i,kktmp],
-                                   weights=weights, bins=bins)
+                                   weights=weight_array[i,kktmp], bins=bins)
 
         if density_proj is not None:
             Y,X = np.meshgrid(y_array, x_array)
@@ -1824,7 +1914,6 @@ class ChemicalDrift(OceanDrift):
 
     def get_pixel_mean_depth(self,lons,lats):
         from scipy import interpolate
-
         # Ocean model depth and lat/lon
         h_grd = self.conc_topo
         h_grd[np.isnan(h_grd)] = 0.
@@ -1922,13 +2011,56 @@ class ChemicalDrift(OceanDrift):
                     "Benzo(a)anthracene":       [0.12,   0.05],
                     "Benzo(a)pyrene":           [0.05,   0.02],
                     "Dibenzo(a,h)anthracene":   [0.03,   0.01],
+                    #
+                    "Acenaphthylene":           [0.12,   0.07],
+                    "Acenaphthene":             [0.19,   0.07],
+                    "Fluorene":                 [0.46,   0.10],
+                    "Anthracene":               [0.08,   0.04],
+                    "Pyrene":                   [0.31,   0.11],
+                    "Chrysene":                 [0.19,   0.07],
+                    "Benzo(b)fluoranthene":     [0.04,   0.02],
+                    "Benzo(k)fluoranthene":     [0.01,   0.01],
+                    "Indeno(1,2,3-cd)pyrene":   [0.07,   0.06],
+                    "Benzo(ghi)perylene":       [0.02,   0.01],
                     }
 
                 emission_factors_closed_loop = {
+                    #                           mean    +/-95%
+                    #                           ug/L    ug/L
+                    "Arsenic":                  [22.,    9.4],
+                    "Cadmium":                  [0.55,   0.19],
+                    "Chromium":                 [1300.,  1700.],
+                    "Copper":                   [480.,   230.],
+                    "Iron":                     [490.,   82.],
+                    "Lead":                     [7.7,    3.1],
+                    "Mercury":                  [0.07,   0.02],
+                    "Nickel":                   [2700.,  860.],
+                    "Vanadium":                 [9100.,  3200.],
+                    "Zinc":                     [370.,   200.],
+                    #
+                    "Naphthalene":              [2.08,   1.05],
+                    "Phenanthrene":             [5.00,   2.30],
+                    "Fluoranthene":             [0.63,	 0.41],
+                    "Benzo(a)anthracene":       [0.30,	 0.29],
+                    "Benzo(a)pyrene":           [0.06,	 0.05],
+                    "Dibenzo(a,h)anthracene":   [0.03,	 0.02],
+                    #
+                    "Acenaphthylene":           [0.09,   0.06],
+                    "Acenaphthene":             [0.47,   0.31],
+                    "Fluorene":                 [1.32,   0.54],
+                    "Anthracene":               [1.55,   2.00],
+                    "Pyrene":                   [0.76,   0.59],
+                    "Chrysene":                 [0.50,   0.45],
+                    "Benzo(b)fluoranthene":     [0.14,   0.12],
+                    "Benzo(k)fluoranthene":     [0.02,   0.02],
+                    "Indeno(1,2,3-cd)pyrene":   [0.04,   0.03],
+                    "Benzo(ghi)perylene":       [0.07,   0.07],
                     }
 
                 if scrubber_type=="open_loop":
                     return emission_factors_open_loop.get(chemical_compound)[0]
+                elif scrubber_type=="closed_loop":
+                    return emission_factors_closed_loop.get(chemical_compound)[0]
                     # TODO: Add emission uncertainty based on 95% confidence interval
 
             sel=np.where((steam > lowerbound) & (steam < higherbound))
@@ -1944,19 +2076,22 @@ class ChemicalDrift(OceanDrift):
 
                 number=np.array(mass_ug / mass_element_ug).astype('int')
 
+                number=np.array(mass_ug / mass_element_ug).astype('int')
+                time = datetime.utcfromtimestamp((t[i] - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's'))
+
                 if number>0:
                     z = -1*np.random.uniform(0, 1, number)
                     self.seed_elements(lon=lo[i]*np.ones(number), lat=la[i]*np.ones(number),
-                                radius=radius, number=number, time=datetime.utcfromtimestamp(t[i].astype(int) * 1e-9),
-                                mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z)
+                                radius=radius, number=number, time=time,
+                                mass=mass_element_ug,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
 
                 mass_residual = mass_ug - number*mass_element_ug
 
                 if mass_residual>0:
                     z = -1*np.random.uniform(0, 1, 1)
                     self.seed_elements(lon=lo[i], lat=la[i],
-                                radius=radius, number=1, time=datetime.utcfromtimestamp(t[i].astype(int) * 1e-9),
-                                mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z)
+                                radius=radius, number=1, time=time,
+                                mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
 
     def init_chemical_compound(self,chemical_compound):
         ''' Chemical parameters for a selection of PAHs:
@@ -2155,3 +2290,78 @@ class ChemicalDrift(OceanDrift):
             self.set_config('chemical:transformations:Tref_Solub', 25)
             self.set_config('chemical:transformations:DeltaH_Solub', 38000)                   ### Benzo(a)pyrene value
 
+    def plot_mass(self,
+                  legend=['dissolved','POC','sediment'],
+                  mass_unit='g',
+                  time_unit='hours',
+                  title=None,
+                  filename=None):
+        """Plot chemical mass distribution between the different species
+            legend      list of specie labels, for example ['dissolved','POC','sediment']
+            mass_unit   'g','mg','ug'
+            time_unit   'seconds', 'minutes', 'hours' , 'days'
+            title       figure title string
+        """
+
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots()
+
+        if not title == []:
+            fig.suptitle(title)
+
+        mass=self.get_property('mass')
+        sp=self.get_property('specie')
+
+        steps=self.steps_output
+
+        bars=np.zeros((steps,5))
+
+        mass_conversion_factor=1e-6
+        if mass_unit=='g' and self.elements.variables['mass']['units']=='ug':
+            mass_conversion_factor=1e-6
+        if mass_unit=='mg' and self.elements.variables['mass']['units']=='ug':
+            mass_conversion_factor=1e-3
+        if mass_unit=='ug' and self.elements.variables['mass']['units']=='ug':
+            mass_conversion_factor=1
+
+        time_conversion_factor = self.time_step.seconds / (60*60)
+        if time_unit=='seconds':
+            time_conversion_factor = self.time_step.seconds
+        if time_unit=='minutes':
+            time_conversion_factor = self.time_step.seconds / 60
+        if time_unit=='hours':
+            time_conversion_factor = self.time_step.seconds / (60*60)
+        if time_unit=='days':
+            time_conversion_factor = self.time_step.seconds / (24*60*60)
+
+        for i in range(steps):
+
+            bars[i]=[np.sum(mass[0][i,:]*(sp[0][i,:]==0))*mass_conversion_factor,
+                     np.sum(mass[0][i,:]*(sp[0][i,:]==1))*mass_conversion_factor,
+                     np.sum(mass[0][i,:]*(sp[0][i,:]==2))*mass_conversion_factor,
+                     np.sum(mass[0][i,:]*(sp[0][i,:]==3))*mass_conversion_factor,
+                     np.sum(mass[0][i,:]*(sp[0][i,:]==4))*mass_conversion_factor]
+
+        bottom=np.zeros_like(bars[:,0])
+        if 'dissolved' in legend:
+            ax.bar(np.arange(steps),bars[:,0],width=1.25,color='midnightblue')
+            bottom=bars[:,0]
+        if 'DOC' in legend:
+            ax.bar(np.arange(steps),bars[:,1],bottom=bottom,width=1.25,color='royalblue')
+            bottom=bottom+bars[:,1]
+        if 'POC' in legend:
+            ax.bar(np.arange(steps),bars[:,2],bottom=bottom,width=1.25,color='palegreen')
+            bottom=bottom+bars[:,2]
+        if 'sediment' in legend:
+            ax.bar(np.arange(steps),bars[:,3],bottom=bottom,width=1.25,color='orange')
+            bottom=bottom+bars[:,3]
+
+        ax.legend(list(filter(None, legend)))
+        ax.set_ylabel('mass [' + mass_unit + ']')
+        ax.axes.get_xaxis().set_ticklabels(ax.axes.get_xticks() * time_conversion_factor)
+        ax.set_xlabel('time [' + time_unit + ']')
+        fig.show()
+
+        if filename is not None:
+            plt.savefig(filename, format=filename[-3:], transparent=True)

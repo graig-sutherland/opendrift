@@ -1,6 +1,25 @@
 History
 =======
 
+2022-03-18 / Release v1.9.0
+---------------------------
+* Now using Cartopy >= 0.20. Cartopy < 0.20 is longer supported.
+* Updated thredds URL to Barents2.5 ocean model
+* ROMS native reader now detects variables having standard_name attribute
+* Using more explicit exceptions internally, e.g. OutsideSpatialCoverageError, CouldNotInitializeReaderError etc.
+* Added 7 Norwegian oils
+* roaring_landmask (written in Rust) is now installed as default (faster landmask checking)
+
+
+2022-02-28 / Release v1.8.4
+---------------------------
+* Fixed discarding of irrelevant readers, which was not working properly. Readers are now discarded if they do not cover simuation temporal or spatial coverage, or do not contain relevant variables
+* Updating/renaming global CMEMS MERCATOR thredds URL. Removing obsoleted CMEMS reader
+* Config setting drift:horizontal_diffusivity is changed from ADVANCED to BASIC, so that it is configurable from e.g. Drifty
+* Fixed bug preventing export of final time step if the final time_step output is not completed
+* Fixed bug in ShipDrift model: beta2 was not updated in loop, giving minor directional error
+* Fixed bug in ShipDrift model: left and right directions were swapped
+
 2022-01-31 / Release v1.8.3
 ---------------------------
 * Removing duplicate oils in OpenOil

@@ -33,6 +33,7 @@ from opendrift.readers import reader_lazy
 from opendrift.readers import reader_from_url
 from opendrift.models.pelagicegg import PelagicEggDrift
 from opendrift.readers import reader_current_from_track
+from opendrift.errors import OutsideSpatialCoverageError
 
 
 o = OceanDrift(loglevel=20)
@@ -121,14 +122,6 @@ class TestReaders(unittest.TestCase):
         self.assertIsNone(readers[2])
         self.assertTrue(isinstance(readers[3],
                                    reader_netCDF_CF_generic.Reader))
-
-    #def test_reader_from_url_online(self):
-    #    readers = reader_from_url(['https://thredds.met.no/thredds/dodsC/sea/norkyst800m/1h/aggregate_be',
-    #        'https://thredds.met.no/thredds/dodsC/ecmwf/atmo/ec_atmo_0_1deg_20211108T000000Z_3h.nc',
-    #        'https://nrt.cmems-du.eu/thredds/dodsC/global-analysis-forecast-phy-001-024-hourly-merged-uv'])
-    #    self.assertTrue(isinstance(readers[0], reader_netCDF_CF_generic.Reader))
-    #    self.assertTrue(isinstance(readers[1], reader_netCDF_CF_generic.Reader))
-    #    self.assertTrue(isinstance(readers[2], reader_netCDF_CF_generic.Reader))
 
     def test_lazy_reader(self):
         o = OceanDrift(loglevel=20)
@@ -303,7 +296,7 @@ class TestReaders(unittest.TestCase):
         # Element outside reader domain
         self.assertEqual(len(r.covers_positions(5, 80)[0]), 0)
         x, y = r.lonlat2xy(5, 80)
-        self.assertRaises(ValueError, r.check_arguments,
+        self.assertRaises(OutsideSpatialCoverageError, r.check_arguments,
                           'y_sea_water_velocity', r.start_time, x, y, 0)
         # Element inside reader domain
         self.assertEqual(len(r.covers_positions(5, 60)[0]), 1)
