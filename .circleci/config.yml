@@ -18,7 +18,7 @@ commands:
             [[ "<<parameters.mpl>>" == "true" ]] && export MPL="--mpl"
 
             source activate opendrift
-            pytest --circleci-parallelize --junitxml=test-results/junit.xml --cov=opendrift --ignore=tests/benchmarks --ignore=tests/wps --run-slow $MPL --durations=50 --benchmark-disable -v --log-cli-level=debug
+            pytest --circleci-parallelize --junitxml=test-results/junit.xml --cov=opendrift --ignore=tests/benchmarks --ignore=tests/wps --run-slow $MPL --mpl-results-path=test-results/mpl_images --durations=50 --benchmark-disable -v --log-cli-level=debug
 
       - store_test_results:
           path: test-results
@@ -44,7 +44,7 @@ commands:
             cat envconfig
 
       - restore_cache:
-          key: v18-deps1-{{ checksum "environment.yml" }}-{{ checksum "envconfig" }}
+          key: v19-deps1-{{ checksum "environment.yml" }}-{{ checksum "envconfig" }}
 
       - run:
           name: Install requirements
@@ -54,14 +54,14 @@ commands:
               if [ -v PYTHON_VERSION ]; then
                 echo "Pinning python: ${PYTHON_VERSION}."
                 # pin python
-                conda create -c conda-forge -n opendrift -q -y "python=${PYTHON_VERSION}"
+                mamba create -c conda-forge -n opendrift -q -y "python=${PYTHON_VERSION}"
 
                 echo "python ${PYTHON_VERSION}.*" > /opt/conda/envs/opendrift/conda-meta/pinned
                 cat /opt/conda/envs/opendrift/conda-meta/pinned
 
-                conda env update -n opendrift -q -f environment.yml
+                mamba env update -n opendrift -q -f environment.yml
               else
-                conda env create -q --file environment.yml
+                mamba env create -q --file environment.yml
               fi
 
               source activate opendrift
@@ -70,14 +70,14 @@ commands:
             fi
 
       - save_cache:
-          key: v18-deps1-{{ checksum "environment.yml" }}-{{ checksum "envconfig" }}
+          key: v19-deps1-{{ checksum "environment.yml" }}-{{ checksum "envconfig" }}
           paths:
             - "/opt/conda/envs"
       - run:
           name: List environment
           command: |
             source activate opendrift
-            conda list
+            mamba list
 
   install_cartopy_shapes:
     steps:
@@ -99,7 +99,7 @@ commands:
 
 test-template: &test-template
   docker:
-    - image: continuumio/miniconda3
+    - image: condaforge/mambaforge
   resource_class: medium+
   steps:
     - checkout
@@ -112,6 +112,59 @@ test-template: &test-template
         mpl: true
 
 jobs:
+  build_package:
+    docker:
+      - image: condaforge/mambaforge
+    environment:
+      - PYTHON_VERSION=3.9
+
+    steps:
+      - checkout
+      - install_conda_environment
+
+      - run:
+          name: Install poetry
+          command: |
+            source activate opendrift
+            pip install poetry
+
+      - run:
+          name: Build package
+          command: |
+            source activate opendrift
+            poetry build -vv
+
+      - persist_to_workspace:
+          root: dist
+          paths:
+            - '*.whl'
+            - '*.tar.gz'
+
+  publish_package:
+    docker:
+      - image: condaforge/mambaforge
+    environment:
+      - PYTHON_VERSION=3.9
+
+    steps:
+      - checkout
+      - install_conda_environment
+
+      - run:
+          name: Install poetry
+          command: |
+            source activate opendrift
+            pip install poetry
+
+      - attach_workspace:
+          at: dist
+
+      - run:
+          name: Publish packages
+          command: |
+            source activate opendrift
+            poetry publish -vv --skip-existing -u __token__ -p ${PYPI_TOKEN}
+
   python_310:
     <<: *test-template
     parallelism: 5
@@ -131,52 +184,9 @@ jobs:
     environment:
       - PYTHON_VERSION=3.8
 
-  python_37:
-    <<: *test-template
-    parallelism: 5
-    environment:
-      - PYTHON_VERSION=3.7
-
-  python_310_o_l_d:
-    docker:
-      - image: continuumio/miniconda3
-    parallelism: 5
-    environment:
-      - PYTHON_VERSION=3.10
-    steps:
-    - checkout
-
-    - install_conda_environment
-
-    - run:
-        name: Install opendrift-landmask-data and remove roaring-landmask
-        command: |
-          source activate opendrift
-          conda install -y -c conda-forge -c opendrift opendrift-landmask-data
-          pip uninstall -y roaring-landmask
-
-    - restore_cache:
-        key: v2-landmask
-
-    - run:
-        name: Generate landmask
-        command: |
-          source activate opendrift
-          python -c 'import opendrift_landmask_data as old; old.Landmask()'
-
-    - save_cache:
-        key: v2-landmask
-        paths:
-          - "/tmp/landmask"
-
-    - install_cartopy_shapes
-
-    - run_tests:
-        mpl: false
-
   docs-build-examples:
     docker:
-      - image: continuumio/miniconda3
+      - image: condaforge/mambaforge
     parallelism: 20
     steps:
       - checkout
@@ -206,7 +216,7 @@ jobs:
           name: Install sphinx and friends
           command: |
             source activate opendrift
-            conda install -c conda-forge sphinx sphinx-autoapi sphinx-gallery>=0.7.0
+            mamba install -c conda-forge sphinx sphinx-autoapi sphinx-gallery>=0.7.0
             pip install sphinx-rtd-theme
 
       - run:
@@ -259,7 +269,7 @@ jobs:
             cd docs/
             make sharded-gallery SHARDS=${CIRCLE_NODE_TOTAL} SHARD=${CIRCLE_NODE_INDEX}
             ls -R source
-          no_output_timeout: 40m
+          no_output_timeout: 60m
 
       - store_test_results:
           path: docs/test-results
@@ -273,7 +283,7 @@ jobs:
 
   docs-build:
     docker:
-      - image: continuumio/miniconda3
+      - image: condaforge/mambaforge
     steps:
       - checkout
 
@@ -320,7 +330,7 @@ jobs:
           name: Install sphinx and friends
           command: |
             source activate opendrift
-            conda install -c conda-forge sphinx sphinx-autoapi sphinx-gallery>=0.7.0
+            mamba install -c conda-forge sphinx sphinx-autoapi sphinx-gallery>=0.7.0
             pip install sphinx-rtd-theme
 
       - save_cache:
@@ -396,13 +406,19 @@ jobs:
 workflows:
   version: 2.1
 
-  test:
+  test-and-package:
     jobs:
       - python_310
       - python_39
       - python_38
-      - python_37
-      - python_310_o_l_d
+      - build_package
+      - publish_package:
+          requires:
+            - build_package
+            - python_39
+          filters:
+            branches:
+             only: master
 
   docs:
     jobs:

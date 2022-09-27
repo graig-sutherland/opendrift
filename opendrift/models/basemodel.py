@@ -197,7 +197,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
         self.elements = self.ElementType()  # Empty array
 
         if loglevel != 'custom':
-            format = '%(levelname)-7s %(name)s: %(message)s'
+            format = '%(levelname)-7s %(name)s:%(lineno)d: %(message)s'
             datefmt = None
             if logtime is not False:
                 format = '%(asctime)s ' + format
@@ -210,7 +210,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
 
             od_loggers = [
                 logging.getLogger('opendrift'),
-                logging.getLogger('opendrift_landmask_data')
             ]
 
             if logfile is not None:
@@ -681,13 +680,16 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                 suggestion = ''
                 if len(i['enum']) > 5:
                     import difflib
-                    matches = difflib.get_close_matches(value,
-                                                        i['enum'],
+                    lowercase_list = [s.lower() for s in i['enum']]
+                    lowercase_mapping = {lc: oc for lc, oc in zip(lowercase_list, i['enum'])}
+                    matches = difflib.get_close_matches(value.lower(),
+                                                        lowercase_list,
                                                         n=20,
                                                         cutoff=.3)
-                    containing = [e for e in i['enum'] if value in e]
+                    containing = [e for e in lowercase_list if value.lower() in e]
                     matches = list(set(matches) | set(containing))
                     if len(matches) > 0:
+                        matches = [lowercase_mapping[match] for match in matches]
                         matches.sort()
                         suggestion = '\nDid you mean any of these?\n%s' % str(
                             matches)
@@ -1280,7 +1282,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                     # hangig thredds-servers. A reader could be discarded
                     # after e.g. 3 such failed attempts
                     logger.info('========================')
-                    logger.warning(e)
+                    logger.exception(e)
                     logger.debug(traceback.format_exc())
                     logger.info('========================')
                     self.timer_end('main loop:readers:' +
@@ -1676,16 +1678,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             logger.info('No land reader added, '
                         'making a temporary landmask reader')
             from opendrift.models.oceandrift import OceanDrift
-            reader_landmask = reader_global_landmask.Reader(extent=[
-                np.maximum(-360,
-                           self.elements_scheduled.lon.min() - deltalon),
-                np.maximum(-89,
-                           self.elements_scheduled.lat.min() - deltalat),
-                np.minimum(720,
-                           self.elements_scheduled.lon.max() + deltalon),
-                np.minimum(89,
-                           self.elements_scheduled.lat.max() + deltalat)
-            ])
+            reader_landmask = reader_global_landmask.Reader()
             seed_state = np.random.get_state()  # Do not alter current random number generator
             o = OceanDrift(loglevel='custom')
             np.random.set_state(seed_state)
@@ -2196,12 +2189,15 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
         # NB: should also repeat some points, if too few
         lonpoints = lonpoints[0:number]
         latpoints = latpoints[0:number]
-        if len(lonpoints) < number:
-            # If number of positions is smaller than requested,
-            # we duplicate the first ones
-            missing = number - len(lonpoints)
-            lonpoints = np.append(lonpoints, lonpoints[0:missing])
-            latpoints = np.append(latpoints, latpoints[0:missing])
+        while True:
+            if len(lonpoints) < number:
+                # If number of positions is smaller than requested,
+                # we duplicate the first ones
+                missing = number - len(lonpoints)
+                lonpoints = np.append(lonpoints, lonpoints[0:missing])
+                latpoints = np.append(latpoints, latpoints[0:missing])
+            else:
+                break
 
         # Finally seed at calculated positions
         self.seed_elements(lonpoints, latpoints, number=number, **kwargs)
@@ -2744,8 +2740,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                 'Adding a customised landmask may be faster...' %
                 self.max_speed)
             self.timer_start('preparing main loop:making dynamical landmask')
-            reader_landmask = reader_global_landmask.Reader(
-                extent=simulation_extent)
+            reader_landmask = reader_global_landmask.Reader()
             self.add_reader(reader_landmask)
 
             self.timer_end('preparing main loop:making dynamical landmask')
@@ -3166,6 +3161,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
 
         provide corners=[lonmin, lonmax, latmin, latmax] for specific map selection
         """
+        logger.debug(f"Setting up map: {corners=}, {fast=}, {lscale=}")
 
         # Initialise map
         if hasattr(self, 'ds'):  # If dataset is lazily imported
@@ -3210,7 +3206,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             latmin = latmin - buffer
             latmax = latmax + buffer
 
-
         if fast is True:
             logger.warning(
                 'Plotting fast. This will make your plots less accurate.')
@@ -3237,10 +3232,15 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
         meanlat = (latmin + latmax) / 2
         aspect_ratio = float(latmax - latmin) / (float(lonmax - lonmin))
         aspect_ratio = aspect_ratio / np.cos(np.radians(meanlat))
-        if aspect_ratio > 1:
-            fig = plt.figure(figsize=(11. / aspect_ratio, 11.))
+        if 'figsize' in kwargs:
+            figsize = kwargs['figsize']
         else:
-            fig = plt.figure(figsize=(11., 11. * aspect_ratio))
+            figsize = 11.  # inches
+
+        if aspect_ratio > 1:
+            fig = plt.figure(figsize=(figsize / aspect_ratio, figsize))
+        else:
+            fig = plt.figure(figsize=(figsize, figsize * aspect_ratio))
 
         ax = fig.add_subplot(111, projection=crs)
         ax.set_extent([lonmin, lonmax, latmin, latmax], crs=ccrs.PlateCarree(globe=globe))
@@ -3380,6 +3380,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                   origin_marker=None,
                   legend=None,
                   legend_loc='best',
+                  title='auto',
                   fps=8,
                   lscale=None,
                   fast=False,
@@ -3459,7 +3460,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             """Sub function needed for matplotlib animation."""
 
             ret = [points, points_deactivated]  # list of elements to return for blitting
-            ax.set_title('%s\n%s UTC' % (self._figure_title(), times[i]))
+            if title == 'auto':
+                ax.set_title('%s\n%s UTC' % (self._figure_title(), times[i]))
+            else:
+                ax.set_title('%s\n%s UTC' % (title, times[i]))
             if background is not None:
                 ret.append(bg)
                 if isinstance(background, xr.DataArray):
@@ -3469,7 +3473,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                         self.get_map_background(ax, background, crs,
                                                 time=times[i])
                 # https://stackoverflow.com/questions/18797175/animation-with-pcolormesh-routine-in-matplotlib-how-do-i-initialize-the-data
-                bg.set_array(scalar[:-1, :-1].ravel())
+                bg.set_array(scalar.ravel())
                 if type(background) is list:
                     ret.append(bg_quiv)
                     bg_quiv.set_UVC(u_component[::skip, ::skip],
@@ -4500,7 +4504,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             if show is True:
                 plt.show()
 
-        return ax, plt
+        return ax, fig
 
     def _substance_name(self):
         return None
