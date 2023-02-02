@@ -1336,34 +1336,33 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                                         -2, missingbottom]
 
                 # Detect elements with missing data, for present reader group
-                if hasattr(env_tmp[variable_group[0]], 'mask'):
-                    try:
-                        del combined_mask
-                    except:
-                        pass
-                    for var in variable_group:
-                        tmp_var = np.ma.masked_invalid(env_tmp[var])
-                        # Changed 13 Oct 2016, but uncertain of effect
-                        # TODO: to be checked
-                        #tmp_var = env_tmp[var]
-                        if 'combined_mask' not in locals():
-                            combined_mask = np.ma.getmask(tmp_var)
-                        else:
-                            combined_mask = \
-                                np.ma.mask_or(combined_mask,
-                                              np.ma.getmask(tmp_var),
-                                              shrink=False)
-                    try:
-                        if len(missing_indices) != len(combined_mask):
-                            # TODO: mask mismatch due to 2 added points
-                            raise ValueError('Mismatch of masks')
-                        missing_indices = missing_indices[combined_mask]
-                    except Exception as ex:  # Not sure what is happening here
-                        logger.info(
-                            'Problems setting mask on missing_indices!')
-                        logger.exception(ex)
-                else:
-                    missing_indices = []  # temporary workaround
+                if not hasattr(env_tmp[variable_group[0]], 'mask'):
+                    env_tmp[variable_group[0]] = np.ma.masked_invalid(env_tmp[variable_group[0]])
+                try:
+                    del combined_mask
+                except:
+                    pass
+                for var in variable_group:
+                    tmp_var = np.ma.masked_invalid(env_tmp[var])
+                    # Changed 13 Oct 2016, but uncertain of effect
+                    # TODO: to be checked
+                    #tmp_var = env_tmp[var]
+                    if 'combined_mask' not in locals():
+                        combined_mask = np.ma.getmask(tmp_var)
+                    else:
+                        combined_mask = \
+                            np.ma.mask_or(combined_mask,
+                                          np.ma.getmask(tmp_var),
+                                          shrink=False)
+                try:
+                    if len(missing_indices) != len(combined_mask):
+                        # TODO: mask mismatch due to 2 added points
+                        raise ValueError('Mismatch of masks')
+                    missing_indices = missing_indices[combined_mask]
+                except Exception as ex:  # Not sure what is happening here
+                    logger.info(
+                        'Problems setting mask on missing_indices!')
+                    logger.exception(ex)
                 if (type(missing_indices)
                         == np.int64) or (type(missing_indices) == np.int32):
                     missing_indices = []
@@ -3401,9 +3400,13 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
 
         markersizebymass = False
         if isinstance(markersize, str):
-            if markersize == 'mass':
+            if markersize.startswith('mass'):
                 markersizebymass = True
-                markersize = 20
+                if markersize[len('mass'):] == '':
+                    # default initial size if not specified
+                    markersize = 100
+                else:
+                    markersize = int(markersize[len('mass'):])
 
         start_time = datetime.now()
         if cmap is None:
@@ -3503,11 +3506,19 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                           y_deactive[index_of_last_deactivated < i]])
 
                 if markersizebymass:
-                    points.set_sizes(
-                        100 * (self.history['mass'][:, i] /
-                               (self.history['mass'][:, i] +
-                                self.history['mass_degraded'][:, i] +
-                                self.history['mass_volatilized'][:, i])))
+                    if 'chemicaldrift' in self.__module__:
+                        points.set_sizes(
+                            markersize * (self.history['mass'][:, i] /
+                                          (self.history['mass'][:, i] +
+                                           self.history['mass_degraded'][:, i] +
+                                           self.history['mass_volatilized'][:, i])))
+                    elif 'openoil' in self.__module__:
+                        points.set_sizes(
+                            markersize * (self.history['mass_oil'][:, i] /
+                                          (self.history['mass_oil'][:, i] +
+                                           self.history['mass_biodegraded'][:, i] +
+                                           self.history['mass_dispersed'][:, i] +
+                                           self.history['mass_evaporated'][:, i])))
 
                 if color is not False:  # Update colors
                     points.set_array(colorarray[:, i])

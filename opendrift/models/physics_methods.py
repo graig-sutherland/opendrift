@@ -44,7 +44,7 @@ def wind_drift_factor_from_trajectory(trajectory_dict, min_period=None):
     else:
         timestep = time[1] - time[0]
         s = np.round(min_period.total_seconds()/(timestep).total_seconds()).astype(int)
-        ind = np.arange(0, len(time), s).astype(np.int)
+        ind = np.arange(0, len(time), s).astype(np.int32)
         print('Original timestep (%s) multiplied by %i: %s' % (timestep, s, timestep*s))
         ind2 = ind.copy()
         for i in range(1, s):
@@ -270,7 +270,7 @@ def verticaldiffusivity_Large1994(windspeed, depth, mixedlayerdepth=50, backgrou
     cd = 1.25e-3  # Kara et al. 2007
     windstress = windspeed*windspeed * cd * rhoa
 
-    K = MLD * stabilityfunction(depth/MLD) * 0.4 * G(depth/MLD) * windstress
+    K = MLD * stabilityfunction(depth/MLD) * 0.4 * G(depth/MLD) * windstress + (depth/MLD)*background_diffusivity
     K[depth>=MLD] = background_diffusivity
 
     return K

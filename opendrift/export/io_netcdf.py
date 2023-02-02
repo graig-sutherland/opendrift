@@ -226,8 +226,9 @@ def import_file_xarray(self, filename, chunks):
         self.time_step_output = timedelta(seconds=float(ts1 - ts0))
     self.time = self.end_time  # Using end time as default
     self.status_categories = self.ds.status.flag_meanings.split()
-    if 'flag_meanings' in self.ds.origin_marker.attrs:
-        self.origin_marker = [s.replace('_', ' ') for s in self.ds.origin_marker.flag_meanings.split()]
+    if 'origin_marker' in self.ds.variables :
+        if 'flag_meanings' in self.ds.origin_marker.attrs:
+            self.origin_marker = [s.replace('_', ' ') for s in self.ds.origin_marker.flag_meanings.split()]
 
     num_elements = len(self.ds.trajectory)
     elements=np.arange(num_elements)
@@ -297,14 +298,9 @@ def import_file(self, filename, times=None, elements=None, load_history=True):
 
     dtype = np.dtype([(var[0], var[1]['dtype'])
                       for var in self.ElementType.variables.items()])
-
-    history_dtype_fields = [
-        (name, self.ElementType.variables[name]['dtype'])
-        for name in self.ElementType.variables]
-    # Add environment variables
+    history_dtype_fields = []
     self.history_metadata = self.ElementType.variables.copy()
-    for env_var in self.required_variables:
-        if env_var in infile.variables:
+    for env_var in infile.variables:
             history_dtype_fields.append((env_var, np.dtype('float32')))
             self.history_metadata[env_var] = {}
     history_dtype = np.dtype(history_dtype_fields)
@@ -319,13 +315,11 @@ def import_file(self, filename, times=None, elements=None, load_history=True):
         elements = firstlast[0][0]
         logger.warning('A subset is requested, and number of active elements is %d'
                        % num_elements)
-    self.history = np.ma.array(
-        np.zeros([num_elements, self.steps_output]),
-        dtype=history_dtype, mask=[True])
     if load_history is True:
         self.history = np.ma.array(
             np.zeros([num_elements, self.steps_output]),
-            dtype=history_dtype, mask=[True])
+            dtype=history_dtype)
+        self.history[:] = np.ma.masked
         for var in infile.variables:
             if var in ['time', 'trajectory']:
                 continue
