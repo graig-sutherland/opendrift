@@ -1,6 +1,22 @@
 History
 =======
 
+2023-05-02 / Release v1.10.7
+----------------------------
+* CF projection info is now parsed with pyproj.CF.from_cf()
+* Fixed bug in rotate_variable_dict for rotated pole projection
+* netCDF generic reader now accepts Xarray Datasets in addition to filenames or URLs
+* ROMS reader now accepts also time variable named 'bulk_time' and unit of days. Added uwnd,uwind,vwnd,wvind,tair,wspd to mapping variables
+
+2023-03-29 / Release v1.10.6
+----------------------------
+* Added five new oils to OpenOil/ADIOS. Mapped NJORD 1997 to NJORD 2002.
+* Temporary hack to let reader_netCDF_CF_generic read Zarr datasets
+* Particles in air (z>0) are not stranded/deactivated when land_binary_mask==1
+* Updated Thredds URL to CMEMS wave model
+* Not dropping Vtransform in reader_ROMS_native when using MFDataset (wildcards). Thanks to Tianning Wu for spotting bug
+* GUI: Timezone CET can be chosen, and added button to copy netCDF outfile to selected folder
+
 2023-01-26 / Release v1.10.5
 ----------------------------
 * Multiple improvements to the chemicaldrift model.

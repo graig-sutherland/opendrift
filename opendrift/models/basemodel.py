@@ -21,31 +21,28 @@ import types
 import traceback
 import inspect
 import logging
-
 logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta
 from collections import OrderedDict
 from abc import ABCMeta, abstractmethod, abstractproperty
+
 import geojson
 import xarray as xr
-
 import numpy as np
 import scipy
 import pyproj
-try:
-    import matplotlib
-    matplotlib.rcParams['legend.numpoints'] = 1
-    matplotlib.rcParams['legend.scatterpoints'] = 1
-    import matplotlib.pyplot as plt
-    from matplotlib import animation
-    from matplotlib.patches import Polygon
-    from matplotlib.path import Path
-    import cartopy
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-except ImportError:
-    print('matplotlib and/or cartopy is not available, can not make plots')
+import matplotlib
+matplotlib.rcParams['legend.numpoints'] = 1
+matplotlib.rcParams['legend.scatterpoints'] = 1
+matplotlib.rcParams['figure.autolayout'] = True
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from matplotlib.patches import Polygon
+from matplotlib.path import Path
+#import cartopy
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 
 import opendrift
 from opendrift.timer import Timeable
@@ -789,9 +786,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                                      None)
             self.environment.land_binary_mask = en.land_binary_mask
 
-        if i == 'stranding':  # Deactivate elements on land
-            self.deactivate_elements(self.environment.land_binary_mask == 1,
-                                     reason='stranded')
+        if i == 'stranding':  # Deactivate elements on land, but not in air
+            self.deactivate_elements((self.environment.land_binary_mask == 1) &
+                                     (self.elements.z <= 0), reason='stranded')
         elif i == 'previous':  # Go back to previous position (in water)
             if self.newly_seeded_IDs is not None:
                 self.deactivate_elements(
@@ -997,7 +994,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             if var not in self.priority_list
         ]
 
-    def get_reader_groups(self, variables=None):
+    def get_reader_groups(self, variables=None, time=None):
         """Find which groups of variables are provided by the same readers.
 
         This function loops through 'priority_list' (see above) and groups
@@ -1217,11 +1214,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             if co is not None:
                 env[variable] = np.ma.ones(env[variable].shape) * co
 
-        for i, variable_group in enumerate(variable_groups):
+        for variable_group, reader_group in zip(variable_groups, reader_groups):
             logger.debug('----------------------------------------')
             logger.debug('Variable group %s' % (str(variable_group)))
             logger.debug('----------------------------------------')
-            reader_group = reader_groups[i]
             missing_indices = np.array(range(len(lon)))
             # For each reader:
             for reader_name in reader_group:
@@ -1230,10 +1226,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                 self.timer_start('main loop:readers:' +
                                  reader_name.replace(':', '<colon>'))
                 reader = self.readers[reader_name]
-                if reader.is_lazy:
-                    logger.warning('Reader is lazy, should not happen')
-                    import sys
-                    sys.exit('Should not happen')
                 if not reader.covers_time(time):
                     logger.debug('\tOutside time coverage of reader.')
                     if reader_name == reader_group[-1]:
@@ -1999,6 +1991,11 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             'radius': [float(radius[0]), float(radius[-1])],
             'number': number
         }
+        # convert array to string in case of array input to seed cone
+        for key in properties.keys():
+            if isinstance(properties[key],np.ndarray):
+                properties[key] = np.array2string(properties[key])
+                
         f = geojson.Feature(geometry=geo, properties=properties)
         self.seed_geojson.append(f)
 
@@ -3308,7 +3305,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
         gl.top_labels = None
 
         fig.canvas.draw()
-        fig.set_tight_layout(True)
+        fig.set_layout_engine('tight')
 
         if not hasattr(self, 'ds'):
             try:
@@ -3781,7 +3778,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
             plt.legend()
 
         fig.canvas.draw()
-        fig.set_tight_layout(True)
+        fig.set_layout_engine('tight')
         if colorbar is True:
             if color is not False:
                 if isinstance(color, str) or clabel is not None:
@@ -4090,6 +4087,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
              show_trajectories=True,
              show_initial=True,
              density_pixelsize_m=1000,
+             lalpha=None,
              bgalpha=1,
              clabel=None,
              surface_color=None,
@@ -4185,11 +4183,15 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
         markercolor = self.plot_comparison_colors[0]
 
         # The more elements, the more transparent we make the lines
-        min_alpha = 0.1
-        max_elements = 5000.0
-        alpha = min_alpha**(2 * (self.num_elements_total() - 1) /
-                            (max_elements - 1))
-        alpha = np.max((min_alpha, alpha))
+        if lalpha is None:
+            min_alpha = 0.1
+            max_elements = 5000.0
+            alpha = min_alpha**(2 * (self.num_elements_total() - 1) /
+                                (max_elements - 1))
+            alpha = np.max((min_alpha, alpha))
+        else:
+            alpha = lalpha  #  provided transparency of trajectories
+        print(alpha, 'ALPHA')
         if legend is False:
             legend = None
         if self.history is not None and linewidth != 0 and show_trajectories is True:
@@ -4506,7 +4508,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
         #plt.gca().tick_params(labelsize=14)
 
         #fig.canvas.draw()
-        #fig.set_tight_layout(True)
         if filename is not None:
             plt.savefig(filename)
             logger.info('Time to make plot: ' +
@@ -5257,8 +5258,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable):
                 outStr += '  %s (%s)\n' % (dr, reason)
         if hasattr(self, 'time'):
             outStr += '\nTime:\n'
-            outStr += '\tStart: %s\n' % (self.start_time)
-            outStr += '\tPresent: %s\n' % (self.time)
+            outStr += '\tStart: %s UTC\n' % (self.start_time)
+            outStr += '\tPresent: %s UTC\n' % (self.time)
             if hasattr(self, 'time_step'):
                 outStr += '\tCalculation steps: %i * %s - total time: %s\n' % (
                     self.steps_calculation, self.time_step,

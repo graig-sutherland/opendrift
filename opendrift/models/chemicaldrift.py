@@ -146,9 +146,9 @@ class ChemicalDrift(OceanDrift):
             'chemical:particle_concentration_half_depth': {'type': 'float', 'default': 20,
                 'min': 0, 'max': 100, 'units': 'm',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
-            'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 20,
-                'min': 0, 'max': 100, 'units': 'm',
-                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:doc_concentration_half_depth': {'type': 'float', 'default': 1000, # TODO: check better
+                'min': 0, 'max': 1000, 'units': 'm',                                     # Vertical conc drops more slowly slower than for SPM
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},                # example: 10.3389/fmars.2017.00436. lower limit around 40 umol/L
             'chemical:particle_diameter_uncertainty': {'type': 'float', 'default': 1e-7,
                 'min': 0, 'max': 100e-6, 'units': 'm',
                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
@@ -225,22 +225,25 @@ class ChemicalDrift(OceanDrift):
                 'min': 0, 'max': 1, 'units': 'L/mol',
                 'level': self.CONFIG_LEVEL_ESSENTIAL, 'description': ''},
             'chemical:transformations:pKa_acid': {'type': 'float', 'default': -1,
-                'min': 0, 'max': 14, 'units': '',
+                'min': -1, 'max': 14, 'units': '',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:pKa_base': {'type': 'float', 'default': -1,
-                'min': 0, 'max': 14, 'units': '',
+                'min': -1, 'max': 14, 'units': '',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:KOC_DOM': {'type': 'float', 'default': -1,
-                'min': 1, 'max': 10000000000, 'units': 'L/KgOC',
+                'min': -1, 'max': 10000000000, 'units': 'L/KgOC',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:KOC_sed': {'type': 'float', 'default': -1,
-                'min': 1, 'max': 10000000000, 'units': 'L/KgOC',
+                'min': -1, 'max': 10000000000, 'units': 'L/KgOC',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:fOC_SPM': {'type': 'float', 'default': 0.05,
                 'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:transformations:fOC_sed': {'type': 'float', 'default': 0.05,
                 'min': 0.01, 'max': 0.1, 'units': 'gOC/g',
+                'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
+            'chemical:transformations:aggregation_rate': {'type': 'float', 'default': 0,
+                'min': 0, 'max': 1, 'units': 's-1',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             # Degradation in water column
             'chemical:transformations:t12_W_tot': {'type': 'float', 'default': 224.08,      # Naphthalene
@@ -327,7 +330,7 @@ class ChemicalDrift(OceanDrift):
                 'min': 0, 'max': 10, 'units': 'm/year',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             'chemical:sediment:buried_leaking_rate': {'type': 'float', 'default': 0,
-                'min': 0, 'max': 10, 'units': 'm/year',
+                'min': 0, 'max': 10, 'units': 's-1',
                 'level': self.CONFIG_LEVEL_ADVANCED, 'description': ''},
             #
             'chemical:compound': {'type': 'enum',
@@ -919,7 +922,7 @@ class ChemicalDrift(OceanDrift):
             self.transfer_rates[self.num_ssrev,self.num_srev] = sed_leaking_rate                # k64
 
 
-            self.transfer_rates[self.num_humcol,self.num_prev] = 1.e-5      # k23, Salinity interval >20 psu
+            self.transfer_rates[self.num_humcol,self.num_prev] = self.get_config('chemical:transformations:aggregation_rate')
             self.transfer_rates[self.num_prev,self.num_humcol] = 0          # TODO check if valid for organics
 
         elif transfer_setup == 'metals':                                # renamed from radionuclides Bokna_137Cs
@@ -1953,7 +1956,7 @@ class ChemicalDrift(OceanDrift):
         logger.info('Postprocessing: Write density and concentration to netcdf file')
 
         # Default bathymetry resolution 500x500. Can be increased (carefully) if high-res data is available and needed
-        grid=np.meshgrid(np.linspace(llcrnrlon,urcrnrlon,1000), np.linspace(llcrnrlat,urcrnrlat,1000))
+        grid=np.meshgrid(np.linspace(llcrnrlon,urcrnrlon,500), np.linspace(llcrnrlat,urcrnrlat,500))
         self.conc_lon=grid[0]
         self.conc_lat=grid[1]
 
@@ -2376,6 +2379,9 @@ class ChemicalDrift(OceanDrift):
 
             from EMERGE Deliverable 2.1
 
+            ash (atmospheric depositions)
+            from EMERGE Deliverable 3.2
+
         """
         emission_factors_open_loop = {
             #                           mean    +/-95%
@@ -2537,12 +2543,27 @@ class ChemicalDrift(OceanDrift):
 
             #                           mean    +/-95%
             #                           ug/L    ug/L
-            "CuO_AFP":                  [0.2112,    0.],
-            "CuPyr_AFP":                [0.7989,    0.],
+            "CuO_AFP":                  [0.7989,    0.],
+            "CuPyr_AFP":                [0.2112,    0.],
             "Zineb_AFP":                [0.2371,    0.],
             "ZnO_AFP":                  [0.8033,    0.],
             "ZnPyr_AFP":                [0.2058,    0.],
          }
+
+        emission_factors_SILAM_ash = {
+            #                           g/g
+            "Aresenic":                 [8.09E-5],
+            "Cadmium":                  [6.30E-6],
+            "Chromium":                 [2.10E-4],
+            "Copper":                   [2.52E-4],
+            "Iron":                     [2.52E-2],
+            "Mercury":                  [6.30E-6],
+            "Nickel":                   [4.10E-2],
+            "Lead":                     [1.16E-4],
+            "Vanadium":                 [8.30E-2],
+            "Zinc":                     [2.42E-3],
+         }
+
         if scrubber_type=="open_loop":
             Emission_factors = emission_factors_open_loop.get(chemical_compound)[0]
         elif scrubber_type=="closed_loop":
@@ -2555,15 +2576,21 @@ class ChemicalDrift(OceanDrift):
             Emission_factors = emission_factors_sewage_water.get(chemical_compound)[0]
         elif scrubber_type=="AFP": # Copper and Zinc from antifouling paint
             Emission_factors = 1e6*emission_factors_AFP.get(chemical_compound)[0]  # 1g = 1e6 ug: AFP is expressed as g
+        elif scrubber_type=="AFP_metals_total":
+            Emission_factors = 1e6 # g to ug
         elif scrubber_type=="N_sewage": # Nitrogen from sewage
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
         elif scrubber_type=="N_foodwaste": # Nitrogen from foodwaste
             Emission_factors = 1e9  # 1kg = 1e9 ug: N_sewage is expressed as kg
+        elif scrubber_type=="SILAM_metals":
+            Emission_factors = 1e9  #+ 1kg = 1e9 ug: Lead and Cadmium depositions given in kg
+        elif scrubber_type=="SILAM_metals_from_ash":
+            Emission_factors = 1e9*emission_factors_SILAM_ash.get(chemical_compound)[0] # 1kg=1e9ug: Ash depositions given in kg
 
         return Emission_factors
         # TODO: Add emission uncertainty based on 95% confidence interval
 
-    def seed_from_STEAM(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, **kwargs):
+    def seed_from_DataArray(self, steam, lowerbound=0, higherbound=np.inf, radius=0, scrubber_type="open_loop", chemical_compound="Copper", mass_element_ug=100e3, number_of_elements=None, **kwargs):
             """Seed elements based on a dataarray with STEAM emission data
     
             Arguments:
@@ -2623,6 +2650,10 @@ class ChemicalDrift(OceanDrift):
                     self.seed_elements(lon=lo[i], lat=la[i],
                                 radius=radius, number=1, time=time,
                                 mass=mass_residual,mass_degraded=0,mass_volatilized=0, z=z, origin_marker=1)
+
+    seed_from_STEAM = seed_from_DataArray
+    ''' Alias of seed_from_DataArray method for backward compatibility
+    '''
 
     def init_chemical_compound(self, chemical_compound = None):
         ''' Chemical parameters for a selection of PAHs:
