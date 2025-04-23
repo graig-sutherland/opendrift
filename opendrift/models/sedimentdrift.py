@@ -23,6 +23,7 @@ import numpy as np
 import logging; logger = logging.getLogger(__name__)
 from opendrift.models.oceandrift import OceanDrift
 from opendrift.models.oceandrift import Lagrangian3DArray
+from opendrift.config import CONFIG_LEVEL_ESSENTIAL, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
 
 class SedimentElement(Lagrangian3DArray):
     variables = Lagrangian3DArray.add_variables([
@@ -44,6 +45,7 @@ class SedimentDrift(OceanDrift):
     required_variables = {
         'x_sea_water_velocity': {'fallback': 0},
         'y_sea_water_velocity': {'fallback': 0},
+        'sea_surface_height': {'fallback': 0},
         'upward_sea_water_velocity': {'fallback': 0},
         'x_wind': {'fallback': 0},
         'y_wind': {'fallback': 0},
@@ -52,7 +54,8 @@ class SedimentDrift(OceanDrift):
         'sea_surface_wave_period_at_variance_spectral_density_maximum': {'fallback': 0},
         'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment': {'fallback': 0},
         'land_binary_mask': {'fallback': None},
-        'ocean_vertical_diffusivity': {'fallback': 0.02},
+        'ocean_vertical_diffusivity': {'fallback': 0.02,
+                                      'profiles': True},
         'ocean_mixed_layer_thickness': {'fallback': 50},
         'sea_floor_depth_below_sea_level': {'fallback': 10000},
         }
@@ -72,7 +75,7 @@ class SedimentDrift(OceanDrift):
                 'units': 'm/s',
                 'description':
                 'Sedimented particles will be resuspended if bottom current shear exceeds this value.',
-                'level': self.CONFIG_LEVEL_ESSENTIAL
+                'level': CONFIG_LEVEL_ESSENTIAL
             }})
 
         # By default, sediments do not strand towards coastline

@@ -16,6 +16,12 @@ o.add_readers_from_list([
     'https://thredds.met.no/thredds/dodsC/sea/norkyst800m/1h/aggregate_be'])
 
 #%%
+# Adjusting some configuration
+o.set_config('processes:dispersion', True)
+o.set_config('processes:evaporation', False)
+o.set_config('processes:emulsification', True)
+
+#%%
 # Seed elements along cone, e.g. ship track with
 # increasing uncertainty in position
 latstart = 68.988911
@@ -23,20 +29,10 @@ lonstart = 16.040701
 latend = 69.991446
 lonend = 17.760061
 time = [datetime.utcnow(), datetime.utcnow() + timedelta(hours=12)]
-
 o.seed_cone(lon=[lonstart, lonend], lat=[latstart, latend],
             oil_type='EKOFISK', radius=[100, 800], number=10000, time=[time])
 
 print(o)
-
-#%%
-# Adjusting some configuration
-o.set_config('processes:dispersion', True)
-o.set_config('processes:evaporation', False)
-o.set_config('processes:emulsification', True)
-o.disable_vertical_motion()
-#o.set_config('drift:vertical_mixing', False)
-#o.set_config('drift:vertical_mixing', False)
 
 #%%
 # Running model for 24 hours

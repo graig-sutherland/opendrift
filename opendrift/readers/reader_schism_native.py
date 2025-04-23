@@ -212,8 +212,8 @@ class Reader(BaseReader,UnstructuredReader):
                 self.numy = var.shape[0]
             if standard_name == 'depth' or axis == 'Z':
                 var_data = var.values
-                if 'positive' not in var.ncattrs() or \
-                        var.__dict__['positive'] == 'up':
+                if 'positive' not in var.attrs or \
+                        var.attrs['positive'] == 'up':
                     self.z = var_data
                 else:
                     self.z = -var_data
@@ -770,7 +770,7 @@ class Reader(BaseReader,UnstructuredReader):
             #              resolution='c', projection='cyl')
 
         # GSHHS coastlines
-        f = cfeature.GSHHSFeature(scale=lscale, levels=[1],
+        f = cfeature.GSHHSFeature(scale=lscale, levels=[1,5,6],
                                   facecolor=cfeature.COLORS['land'])
         ax.add_geometries(
             f.intersecting_geometries([lonmin, lonmax, latmin, latmax]),
@@ -886,7 +886,6 @@ class ReaderBlockUnstruct():
                     This is read from reader object, so that it is not recomputed every time
 
     """
-    logger = logging.getLogger('opendrift')  # using common logger
 
     def __init__(self, data_dict,
                  KDtree = None,

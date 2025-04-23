@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import pytest
 import numpy as np
 from opendrift.models.openoil import adios
+from opendrift.models.openoil import OpenOil
 
 
 @pytest.fixture
@@ -12,20 +13,23 @@ def aasgard():
     return f
 
 def test_max_water_fraction():
-    from opendrift.models.openoil import OpenOil
-    oiltype='FENJA (PIL) 2015'
-    for wf, expected in zip([.5, .9], [.48, .84]):
+    # Check that max water fraction is saturated to max values from Sintef model
+    # Max water_fraction 0.317 for SST=0 from Sintef, for SST=10,20 from NOAA
+    for sst,expected_fraction in zip([0, 5, 10, 15, 20], [0.62, 0.62, 0.673, 0.726, 0.726]):
         o = OpenOil(loglevel=50)
-        o.max_water_fraction[oiltype] = wf
-        o.set_config('environment:constant:land_binary_mask', 0)
-        o.set_config('environment:constant:x_sea_water_velocity', 0)
-        o.set_config('environment:constant:y_sea_water_velocity', 0)
-        o.set_config('environment:constant:x_wind', 10)
-        o.set_config('environment:constant:y_wind', 10)
-        o.seed_elements(lon=0, lat=60, time=datetime.now(), number=1000, oiltype=oiltype)
-        o.run(duration=timedelta(hours=24))
-        wfa = o.history['water_fraction'].mean()
-        assert np.isclose(wfa, expected, atol=.01)
+        o.set_config('environment:constant',
+            {
+            'x_wind': 10,
+            'y_wind': 0,
+            'x_sea_water_velocity': 0,
+            'y_sea_water_velocity': 0,
+            'sea_water_temperature': sst,
+            'land_binary_mask': 0
+            })
+        o.seed_elements(lon=3, lat=60, time=datetime.now(), number=100,
+                        oil_type='BREIDABLIKK 2023')
+        o.run(duration=timedelta(hours=8))
+        assert np.isclose(o.elements.water_fraction.max(), expected_fraction, atol=.001)
 
 def test_open_aasgard(aasgard):
     print(aasgard)
@@ -36,7 +40,7 @@ def test_density_at_temp(aasgard):
 
 def test_kvis_at_temp(aasgard):
     # old oillibrary: 3.298187589355751e-05
-    assert np.isclose(aasgard.kvis_at_temp(285.), 3.29e-5)
+    assert np.isclose(aasgard.kvis_at_temp(285.), 3.402e-5)
 
 def test_mass_fraction(aasgard):
     assert np.isclose(aasgard.mass_fraction.sum(), 1.0)
@@ -76,4 +80,15 @@ def test_vapor_pressure(aasgard):
     # new_vp.sort()
 
     # np.testing.assert_array_almost_equal(old_vp, new_vp)
+
+def test_k0y_const():
+    o = OpenOil()
+    for oil in o.oiltypes:
+        print('testing oil:', oil)
+        oils = adios.oils(1, oil)
+        if len(oils) > 0:
+            f = oils[0].make_full()
+            if hasattr(f, 'gnome_oil'):
+                print(f.k0y)
+                assert f.k0y == 2.024e-06
 

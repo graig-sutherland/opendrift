@@ -1,102 +1,82 @@
-from pathlib import Path
-import os
-import sys
+import copy
 import requests
-from opendrift.models.openoil.adios.oil import OpendriftOil
+import json
+import tarfile
+import lzma
+from importlib.resources import files
+from adios_db.models.oil.oil import Oil
+from adios_db.computation import gnome_oil
 
-import coloredlogs
-import logging
-logger = logging.getLogger('harvest_oils')
+# Oils marked as gnome_suitable, but can not be converted to ADIOS object
+blacklist = ['AD02384']
 
-ADIOS = "https://adios.orr.noaa.gov/api/oils/"
+generic_oils = {
+        'GENERIC LIGHT CRUDE': {'adios_id': 'GN00006', 'opendrift_id': 'AD04000'},
+        'GENERIC MEDIUM CRUDE': {'adios_id': 'GN00007', 'opendrift_id': 'AD04001'},
+        'GENERIC HEAVY CRUDE': {'adios_id': 'GN00004', 'opendrift_id': 'AD04002'},
+        'GENERIC GASOLINE': {'adios_id': 'GN00003', 'opendrift_id': 'AD04003'},
+        'GENERIC FUEL OIL No.2': {'adios_id': 'AD01427', 'opendrift_id': 'AD04006'},
+        'GENERIC DIESEL': {'adios_id': 'GN00002', 'opendrift_id': 'AD04007'},
+        'GENERIC HOME HEATING OIL': {'adios_id': 'AD02139', 'opendrift_id': 'AD04008'},
+        'GENERIC INTERMEDIATE FUEL OIL 180': {'adios_id': 'AD01676', 'opendrift_id': 'AD04009'},
+        'GENERIC INTERMEDIATE FUEL OIL 300': {'adios_id': 'AD02428', 'opendrift_id': 'AD04010'},
+        'GENERIC FUEL OIL No. 6': {'adios_id': 'AD02431', 'opendrift_id': 'AD04011'},
+        'GENERIC BUNKER C': {'adios_id': 'AD02184', 'opendrift_id': 'AD04012'},
+        'GENERIC HEAVY FUEL OIL': {'adios_id': 'AD02052', 'opendrift_id': 'AD04013'},
+        }
 
-def get_full_oil_from_id(_id):
-    logger.debug(f"Fetching full oil: {_id}")
-    o = requests.get(f"{ADIOS}/{_id}")
-    o.raise_for_status()
-    return OpendriftOil(o.json())
-
-def oils(limit=9999, query=''):
-    """
-    Get all oils.
-
-    Args:
-
-        limit: number of oils to retrieve, None means all available.
-        query: search string (name, id, location).
-
-
-    Returns:
-
-        List of `class:ThinOil`s.
-    """
-
-    o = requests.get(ADIOS, {
-        'dir': 'asc',
-        'limit': limit,
-        'page': 0,
-        'sort': 'metadata.name',
-        'q': query
-    })
-    o.raise_for_status()
-    o = o.json()
-
-    oils = o['data']
-
-    logging.debug(f"Total oils: {o['meta']['total']}, download limit: {limit}")
-    logger.info(f"Fetched {len(oils)} oils from ADIOS")
-
-    limit = len(oils) if limit is None else limit
-    oils = oils[:min(limit, len(oils))]
-    oils = [o['_id'] for o in oils]
-
-    return oils
-
-def download(dst):
-    logger.info('downloading all oils..')
-
-    ols = oils()
-    logger.info(f'downloaded list of oils: {len(ols)}, fetching full oil..')
-
-    for o in ols:
-        logger.info(f"fetching oil: {o}..")
-        o = get_full_oil_from_id(o)
-        if o.valid():
-            f = dst / Path(o.id).with_suffix('.json')
-            with open(f, 'w') as fd:
-                fd.write(o.json())
-        else:
-            logger.warning(f'skipping invalid oil: {o.id}')
-
-def make_archive(oildir, file):
-    logger.info(f'making archive: {oildir / "*.json"}')
-
-    # Making a big JSON array with oils as a dictionary each.
+def download():
+    #url = 'https://github.com/OpenDrift/noaa-oil-data/archive/refs/heads/production.tar.gz'
+    url = 'https://github.com/OpenDrift/noaa-oil-data/archive/refs/heads/new_oils.tar.gz'
+    print(f'Downloading all oils from {url}')
     oils = []
+    response = requests.get(url, stream=True)
+    tar = tarfile.open(fileobj=response.raw, mode='r|gz')
+    for file in tar:
+        if file.isfile() and file.name.endswith('.json'):
+            f = tar.extractfile(file)  
+            o = json.load(f.raw)
+            AO = Oil.from_py_json(o)
+            AO.validate()
+            if not AO.metadata.gnome_suitable:
+                print(f'Discarding {AO.metadata.name}, not GNOME suitable')
+                continue
+            else:
+                oils.append(o)
+    # Add mapping to generic oils
+    print('Adding generic oils')
+    for generic_name, oil_ids in generic_oils.items():
+        adios_id = oil_ids['adios_id']
+        opendrift_id = oil_ids['opendrift_id']
+        found = False
+        for o in oils.copy():
+            o = copy.deepcopy(o)
+            if o['oil_id'] == adios_id:
+                found = True
+                break
+        if found is False:
+            raise ValueError(f'Did not find {adios_id} as {generic_name}')
+        else:
+            print(f'Mapping {generic_name} [{opendrift_id}] to adios {adios_id}')
+        o['metadata']['name'] = generic_name
+        #o['metadata']['source_id'] = opendrift_id
+        o['oil_id'] = opendrift_id
+        oils.append(o)  # Adding modified generic oil
 
-    import glob
-    import json
-    import lzma
-    for f in glob.glob(str(oildir / '*.json')):
-        with open(f, 'r') as fd:
-            oils.append(json.load(fd))
-
-    logger.info(f'added {len(oils)} oils..')
-    logger.info(f'compressing to {file}..')
-    with lzma.open(file, 'wt') as c:
+    print(f'Downloaded {len(oils)} oils, saving to oils.xz')
+    with lzma.open('oils.xz', 'wt') as c:
         json.dump(oils, c)
 
+def list_oils():
+    oil_file = files('opendrift.models.openoil.adios').joinpath('oils.xz')
+    with lzma.open(oil_file, 'rt') as archive:
+        oils = json.load(archive)
+
+    print(oils)
+    print(len(oils))
+    for o in oils:
+        print(o['oil_id'], o['metadata']['name'])
 
 if __name__ == '__main__':
-    coloredlogs.install('debug')
-
-    dst = Path('oils')
-
-    if not dst.exists():
-        os.makedirs(dst)
-
-    if not '--skip-download' in sys.argv:
-        download(dst)
-
-    make_archive(dst, 'oils.xz')
-
+    download()
+    #list_oils()

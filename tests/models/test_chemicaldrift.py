@@ -32,7 +32,7 @@ def test_chemicaldrift_partitioning_organics():
 
     days=300
     ntraj=200
-    
+
     # If one parameter is given as a list, different instances of
     # ChemicalDrift will be created
     configs = [
@@ -49,14 +49,14 @@ def test_chemicaldrift_partitioning_organics():
     [ "chemical:particle_diameter_uncertainty"  , 0                     ],
     [ "drift:vertical_mixing"                   , False                 ],
     ]
-    
+
     # possible to specify lists of different constant readers values
     # that will be used in different longitude intervals
     readers = [
     [ "spm"                                     , 80                    ],
     [ "x_sea_water_velocity"                    , 0                     ],
     [ "y_sea_water_velocity"                    , 0                     ]]
-    
+
     # Build list of ChemicalDrift objecs with different parameters
     o=list()
     for i in range(len(configs)):
@@ -99,6 +99,6 @@ def test_chemicaldrift_partitioning_organics():
 
         o[j].run(duration=timedelta(hours=24*days),time_step=60*60*168,time_step_output=60*60*168)
 
-    assert sum(o[0].elements.specie==2)/o[0].num_elements_total()*100 == 35
-    assert sum(o[1].elements.specie==2)/o[1].num_elements_total()*100 == 72.5
-    assert sum(o[2].elements.specie==2)/o[2].num_elements_total()*100 == 84
+    assert sum(o[0].elements.specie==2)/o[0].num_elements_total()*100 == 39
+    assert sum(o[1].elements.specie==2)/o[1].num_elements_total()*100 == 68.5
+    assert sum(o[2].elements.specie==2)/o[2].num_elements_total()*100 == 85.5

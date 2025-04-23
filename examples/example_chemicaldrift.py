@@ -4,7 +4,7 @@ ChemicalDrift - Transport and fate of organic compounds
 ========================================================
 """
 
-from opendrift.readers import reader_netCDF_CF_generic, reader_ROMS_native
+from opendrift.readers import reader_netCDF_CF_generic
 from opendrift.models.chemicaldrift import ChemicalDrift
 from opendrift.readers.reader_constant import Reader as ConstantReader
 from datetime import timedelta, datetime
@@ -71,13 +71,9 @@ print('Number of transformations:')
 for isp in range(o.nspecies):
     print('{}'.format(['{:>9}'.format(np.int32(item)) for item in o.ntransformations[isp,:]]) )
 
-mass = o.get_property('mass')
-mass_d = o.get_property('mass_degraded')
-mass_v = o.get_property('mass_volatilized')
-
-m_pre = sum(mass[0][-1])
-m_deg = sum(mass_d[0][-1])
-m_vol = sum(mass_v[0][-1])
+m_pre = o.result.mass.isel(time=-1).sum()
+m_deg = o.result.mass_degraded.isel(time=-1).sum()
+m_vol = o.result.mass_volatilized.isel(time=-1).sum()
 m_tot = m_pre + m_deg + m_vol
 
 print('Mass budget for target chemical:')
@@ -85,11 +81,12 @@ print('mass preserved       : {:.3f}'.format(m_pre * 1e-6),' g   {:.3f}'.format(
 print('mass degraded        : {:.3f}'.format(m_deg * 1e-6),' g   {:.3f}'.format(m_deg/m_tot*100),'%')
 print('mass volatilized     : {:.3f}'.format(m_vol * 1e-6),' g   {:.3f}'.format(m_vol/m_tot*100),'%')
 
-
 legend=['dissolved', '', 'SPM', 'sediment', '']
 
 o.animation_profile(color='specie',
-            markersize=5,
+            markersize='mass',
+            markersize_scaling=30,
+            alpha=.5,
             vmin=0,vmax=o.nspecies-1,
             legend = legend,
             legend_loc = 3,
@@ -100,6 +97,8 @@ o.animation_profile(color='specie',
 
 o.animation(color='specie',
             markersize='mass',
+            markersize_scaling=100,
+            alpha=.5,
             vmin=0,vmax=o.nspecies-1,
             colorbar=False,
             fast = True,

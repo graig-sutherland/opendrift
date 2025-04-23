@@ -18,16 +18,13 @@
 OpenHNS is a 3D HNS drift module bundled within the OpenDrift framework.
 """
 
-from io import open
 import numpy as np
-from datetime import datetime
-import pyproj
-import matplotlib.pyplot as plt
 import logging
 
 logger = logging.getLogger(__name__)
 
 from opendrift.models.oceandrift import OceanDrift, Lagrangian3DArray
+from opendrift.config import CONFIG_LEVEL_ESSENTIAL, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
 
 
 # Defining the oil element properties
@@ -112,6 +109,7 @@ class OpenHNS(OceanDrift):
         'y_sea_water_velocity': {
             'fallback': None
         },
+        'sea_surface_height': {'fallback': 0},
         'x_wind': {
             'fallback': None
         },
@@ -180,10 +178,6 @@ class OpenHNS(OceanDrift):
         },
     }
 
-    # The depth range (in m) which profiles shall cover
-    required_profiles_z_range = [-20, 0]
-
-    max_speed = 1.3  # m/s
 
     hns_types = {
         'butyl': {'evaporation_rate': .03, 'dissolution_rate': .05},
@@ -216,7 +210,7 @@ class OpenHNS(OceanDrift):
                 'default':
                 list(self.hns_types)[0],
                 'level':
-                self.CONFIG_LEVEL_ESSENTIAL,
+                CONFIG_LEVEL_ESSENTIAL,
                 'description':
                 'HNS type to be used for the simulation'
             },

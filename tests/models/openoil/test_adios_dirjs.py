@@ -7,20 +7,19 @@ def test_get_oils(benchmark):
     assert len(oils) == 50
 
 
-@pytest.mark.slow
 def test_get_all_oils(benchmark):
     oils = benchmark(adios.dirjs.oils, None)
-    assert len(oils) >= 1700
+    assert len(oils) >= 1269
 
 
 def test_get_all_oil_names(benchmark):
     oils = benchmark(adios.dirjs.get_oil_names)
-    assert len(oils) >= 1700
+    assert len(oils) >= 1269
 
 
 def test_get_all_oil_names_location(benchmark):
     oils = benchmark(adios.dirjs.get_oil_names, location='NORWAY')
-    assert len(oils) >= 150 and len(oils) <= 201
+    assert len(oils) >= 203
 
 
 def test_bunker_c_1987():

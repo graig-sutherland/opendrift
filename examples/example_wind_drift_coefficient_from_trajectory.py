@@ -1,15 +1,17 @@
 #!/usr/bin/env python
 """
-Retieving wind drift factor from trajectory
-===========================================
+Retrieving wind drift factor from trajectory
+============================================
 """
 
+import trajan as _
 from datetime import datetime, timedelta
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import cmocean
 from opendrift.models.oceandrift import OceanDrift
-from opendrift.models.physics_methods import wind_drift_factor_from_trajectory, distance_between_trajectories, skillscore_liu_weissberg
+from opendrift.models.physics_methods import wind_drift_factor_from_trajectory
 
 #%%
 # A very simple drift model is: current + wind_drift_factor*wind
@@ -26,20 +28,22 @@ ot.add_readers_from_list([ot.test_data_folder() +
     ot.test_data_folder() + '16Nov2015_NorKyst_z_surface/arome_subset_16Nov2015.nc'], lazy=False)
 
 #%%
+# Adding some horizontal diffusivity as "noise"
+ot.set_config('drift:horizontal_diffusivity', 10)
+
+#%%
 # Using a wind_drift_factor of 0.33 i.e. drift is current + 3.3% of wind speed
-ot.seed_elements(lon=4, lat=60, number=1, time=ot.readers[list(ot.readers)[0]].start_time,
+ot.seed_elements(lon=4, lat=60, number=1, time=ot.env.readers[list(ot.env.readers)[0]].start_time,
         wind_drift_factor=0.033)
 
 #%%
-# Adding some horizontal diffusivity as "noise"
-ot.set_config('drift:horizontal_diffusivity', 10)
 ot.run(duration=timedelta(hours=12), time_step=600)
 
 #%%
 # Secondly, calculating the wind_drift_factor which reproduces the "observed" trajectory with minimal difference
-drifter_lons = ot.history['lon'][0]
-drifter_lats = ot.history['lat'][0]
-drifter_times = ot.get_time_array()[0]
+drifter_lons = ot.result.lon.squeeze()
+drifter_lats = ot.result.lat.squeeze()
+drifter_times = pd.to_datetime(ot.result.time).to_pydatetime()
 drifter={'lon': drifter_lons, 'lat': drifter_lats,
         'time': drifter_times, 'linewidth': 2, 'color': 'b', 'label': 'Synthetic drifter'}
 
@@ -47,12 +51,12 @@ o = OceanDrift(loglevel=50)
 o.add_readers_from_list([o.test_data_folder() +
     '16Nov2015_NorKyst_z_surface/norkyst800_subset_16Nov2015.nc',
     o.test_data_folder() + '16Nov2015_NorKyst_z_surface/arome_subset_16Nov2015.nc'], lazy=False)
-t = o.get_variables_along_trajectory(variables=['x_sea_water_velocity', 'y_sea_water_velocity', 'x_wind', 'y_wind'],
+t = o.env.get_variables_along_trajectory(variables=['x_sea_water_velocity', 'y_sea_water_velocity', 'x_wind', 'y_wind'],
         lons=drifter_lons, lats=drifter_lats, times=drifter_times)
 
 wind_drift_factor, azimuth = wind_drift_factor_from_trajectory(t)
 
-o.seed_elements(lon=4, lat=60, number=1, time=ot.readers[list(ot.readers)[0]].start_time,
+o.seed_elements(lon=4, lat=60, number=1, time=ot.start_time,
                 wind_drift_factor=0.033)
 
 #%% 
@@ -111,15 +115,18 @@ o.add_readers_from_list([o.test_data_folder() +
 #%%
 # Calulating trajectories for 100 different wind_drift_factors between 0 and 0.05
 wdf = np.linspace(0.0, 0.05, 100)
-o.seed_elements(lon=4, lat=60, time=ot.readers[list(ot.readers)[0]].start_time,
+o.seed_elements(lon=4, lat=60, time=ot.start_time,
                 wind_drift_factor=wdf, number=len(wdf))
 o.run(duration=timedelta(hours=12), time_step=600)
 o.plot(linecolor='wind_drift_factor', drifter=drifter)
 
 #%%
+# Using TrajAn to calculate skillscore
+skillscore = o.result.traj.skill(ot.result, tolerance_threshold=1)
+
+#%%
 # Plotting and finding the wind_drift_factor which maximises the skillscore
-skillscore = o.skillscore_trajectory(drifter_lons, drifter_lats, drifter_times, tolerance_threshold=1)
-ind = np.argmax(skillscore)
+ind = skillscore.argmax()
 plt.plot(wdf, skillscore)
 plt.xlabel('Wind drift factor  [fraction]')
 plt.ylabel('Liu-Weissberg skillscore')
@@ -132,4 +139,4 @@ plt.show()
 # one position to the next (i.e. polar histogram above).
 # This is even more clear if increasing the diffusivity (i.e. noise) above from 10 m2/s to 200 m2/s:
 # The histogram method then gives 0.071, which is much to high (true is 0.033), and the histogram is noisy.
-# The skillscore method is still robust, and gives a `wind_drift_factor` of 0.036, only slightly too high.
+# The skillscore method is still robust, and gives a `wind_drift_factor` of 0.034, only slightly too high.

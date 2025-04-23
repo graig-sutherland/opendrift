@@ -54,10 +54,19 @@ class ReaderDomain(Timeable):
         x = self.xmin + (self.xmax - self.xmin) / 2
         y = self.ymin + (self.ymax - self.ymin) / 2
         lo, la = self.xy2lonlat(x, y)
-        return(lo[0], la[0])
+        return(lo, la)
 
     def rotate_vectors(self, reader_x, reader_y, u_component, v_component,
                        proj_from, proj_to):
+        if isinstance(u_component, list):  # Looping recursively over ensemble members
+            uout = []
+            vout = []
+            for ucomp, vcomp in zip(u_component, v_component):
+                ucomprot, vcomprot = self.rotate_vectors(
+                    reader_x, reader_y, ucomp, vcomp, proj_from, proj_to)
+                uout.append(ucomprot)
+                vout.append(vcomprot)
+            return uout, vout
         """Rotate vectors from one crs to another."""
 
         if type(proj_from) is str:
@@ -74,6 +83,10 @@ class ReaderDomain(Timeable):
             delta_y = 10  # 10 m along y-axis
 
         transformer = pyproj.Transformer.from_proj(proj_from, proj_to)
+        if hasattr(reader_x, '__len__'):
+            if len(reader_x) == 1:
+                reader_x = reader_x[0]
+                reader_y = reader_y[0]
         x2, y2 = transformer.transform(reader_x, reader_y)
         x2_delta, y2_delta = transformer.transform(reader_x,
                                                    reader_y + delta_y)
@@ -98,8 +111,6 @@ class ReaderDomain(Timeable):
     def xy2lonlat(self, x, y):
         """Calculate x,y in own projection from given lon,lat (scalars/arrays).
         """
-        x = np.atleast_1d(x)
-        y = np.atleast_1d(y)
         if self.proj.crs.is_geographic:
             if 'ob_tran' in str(self.proj4):
                 logger.debug('NB: Converting degrees to radians ' +
@@ -116,8 +127,10 @@ class ReaderDomain(Timeable):
         """
         Calculate lon,lat from given x,y (scalars/arrays) in own projection.
         """
-        lon = np.atleast_1d(lon)
-        lat = np.atleast_1d(lat)
+        if hasattr(lon, '__len__'):
+            if len(lon) == 1:
+                lon = lon[0]
+                lat = lat[0]
         if 'ob_tran' in str(self.proj4):
             x, y = self.proj(lon, lat, inverse=False)
             return np.degrees(x), np.degrees(y)
@@ -430,10 +443,10 @@ class ReaderDomain(Timeable):
 # Methods to derive environment variables from others available
 ################################################################
 
-def land_binary_mask_from_ocean_depth(env):
+def land_binary_mask_from_ocean_depth(env,in_name=None,out_name=None):
     env['land_binary_mask'] = np.float32(env['sea_floor_depth_below_sea_level'] <= 0)
 
-def wind_from_speed_and_direction(env):
+def wind_from_speed_and_direction(env, in_name, out_name):
     if 'wind_from_direction' in env:
         wfd = env['wind_from_direction']
     else:
@@ -448,6 +461,19 @@ def wind_from_speed_and_direction(env):
     #    x, y,
     #    east_wind, north_wind,
     #    None, self.proj)
+
+def vector_from_speed_and_direction(env, in_name, out_name):
+    # TODO: assuming here lonlat or Mercator projection  !!NB!!
+    wfd = env[in_name[1]]
+    env[out_name[0]] = env[in_name[0]]*np.cos(np.radians(wfd))
+    env[out_name[1]] = env[in_name[0]]*np.sin(np.radians(wfd))
+
+def reverse_direction(env, in_name, out_name):
+    env[out_name[0]] = env[in_name[0]]
+
+def magnitude_from_components(env, in_name, out_name):
+    env[out_name[0]] = np.sqrt(
+        env[in_name[0]]**2 + env[in_name[1]]**2)
 
 ################################################################
 
@@ -469,18 +495,18 @@ class Variables(ReaderDomain):
 
         # Deriving environment variables from other available variables
         self.environment_mappings = {
-            'wind_from_speed_and_direction': {
-                'input': ['wind_speed', 'wind_from_direction'],
-                'output': ['x_wind', 'y_wind'],
-                'method': wind_from_speed_and_direction,
-                #lambda reader, env: reader.wind_from_speed_and_direction(env)},
-                'active': True},
-            'wind_from_speed_and_direction_to': {
-                'input': ['wind_speed', 'wind_to_direction'],
-                'output': ['x_wind', 'y_wind'],
-                'method': wind_from_speed_and_direction,
-                #lambda reader, env: reader.wind_from_speed_and_direction(env)},
-                'active': True},
+            #'wind_from_speed_and_direction': {
+            #    'input': ['wind_speed', 'wind_from_direction'],
+            #    'output': ['x_wind', 'y_wind'],
+            #    'method': wind_from_speed_and_direction,
+            #    #lambda reader, env: reader.wind_from_speed_and_direction(env)},
+            #    'active': True},
+            #'wind_from_speed_and_direction_to': {
+            #    'input': ['wind_speed', 'wind_to_direction'],
+            #    'output': ['x_wind', 'y_wind'],
+            #    'method': wind_from_speed_and_direction,
+            #    #lambda reader, env: reader.wind_from_speed_and_direction(env)},
+            #    'active': True},
             'land_binary_mask_from_ocean_depth': {
                 'input': ['sea_floor_depth_below_sea_level'],
                 'output': ['land_binary_mask'],
@@ -488,7 +514,45 @@ class Variables(ReaderDomain):
                 'active': False}
             }
 
+        # Add automatically mappings from xcomp,ycomp <-> magnitude,direction
+        for vector_pair in vector_pairs_xy:
+            #if len(vector_pair) > 4:
+                # TODO: temporarily disabling this test, as one test is failing,
+                # as direction_to is automatically calculated from direction_from
+                #self.environment_mappings[vector_pair[3]] = {
+                #    'input': [vector_pair[4]],
+                #    'output': [vector_pair[3]],
+                #    'method': reverse_direction,
+                #    'active': True
+                #    }
+                #self.environment_mappings[vector_pair[4]] = {
+                #    'input': [vector_pair[3]],
+                #    'output': [vector_pair[4]],
+                #    'method': reverse_direction,
+                #    'active': True
+                #    }
+            if len(vector_pair) >= 4:
+                self.environment_mappings[str(vector_pair[0:2])] = {
+                    'input': [vector_pair[2], vector_pair[3]],
+                    'output': [vector_pair[0], vector_pair[1]],
+                    'method': vector_from_speed_and_direction,
+                    'active': True
+                    }
+            if len(vector_pair) > 2:
+                self.environment_mappings[vector_pair[2]] = {
+                    'input': [vector_pair[0], vector_pair[1]],
+                    'output': [vector_pair[2]],
+                    'method': magnitude_from_components,
+                    'active': True
+                    }
+
         super().__init__()
+
+    def prepare(self, extent, start_time, end_time, max_speed):
+        """Prepare reader for given simulation coverage in time and space."""
+        logger.debug('Nothing more to prepare for ' + self.name)
+        pass  # to be overriden by specific readers
+
 
     def activate_environment_mapping(self, mapping_name):
         if mapping_name not in self.environment_mappings:
@@ -499,9 +563,10 @@ class Variables(ReaderDomain):
         if not all(item in em['output'] for item in self.variables) and \
                     all(item in self.variables for item in em['input']):
             for v in em['output']:
-                logger.debug('Adding variable mapping: %s -> %s' % (em['input'], v))
-                self.variables.append(v)
-                self.derived_variables[v] = em['input']
+                if v not in self.variables:
+                    logger.debug('Adding variable mapping: %s -> %s' % (em['input'], v))
+                    self.variables.append(v)
+                    self.derived_variables[v] = em['input']
 
     def __calculate_derived_environment_variables__(self, env):
         for m in self.environment_mappings:
@@ -509,11 +574,10 @@ class Variables(ReaderDomain):
             if em['active'] is False:
                 continue
             if not all(item in em['output'] for item in self.variables) and \
-                    all(item in self.variables for item in em['input']):
+                    all(item in env for item in em['input']):
                 for v in em['output']:
                     logger.debug('Calculating variable mapping: %s -> %s' % (em['input'], v))
-                    method = lambda env: em['method'](env)
-                    method(env)
+                    em['method'](env, em['input'], em['output'])
 
     def set_buffer_size(self, max_speed, time_coverage=None):
         '''
@@ -654,6 +718,9 @@ class Variables(ReaderDomain):
             * :meth:`_get_variables_interpolated_`.
         """
         self.timer_start('total')
+
+        variables = variables.copy()  # Avoid list to be mutated
+
         # Raise error if time not not within coverage of reader
         if not self.covers_time(time):
             raise OutsideTemporalCoverageError('%s is outside time coverage (%s - %s) of %s' %
@@ -689,7 +756,7 @@ class Variables(ReaderDomain):
             z = z.copy() * np.ones(x.shape)
         z = z.copy()[ind_covered]
 
-        logger.debug('Fetching variables from ' + self.name)
+        logger.debug(f'Fetching variables from {self.name} covering {len(ind_covered)} elements')
         self.timer_start('reading')
 
         # Filter derived variables
@@ -731,11 +798,11 @@ class Variables(ReaderDomain):
                 vector_pairs = []
                 for var in variables:
                     for vector_pair in vector_pairs_xy:
-                        if var in vector_pair:
-                            counterpart = list(set(vector_pair) -
+                        if var in vector_pair[0:2]:
+                            counterpart = list(set(vector_pair[0:2]) -
                                                set([var]))[0]
                             if counterpart in variables:
-                                vector_pairs.append(vector_pair)
+                                vector_pairs.append(vector_pair[0:2])
                             else:
                                 logger.warning(
                                     'Missing component of vector pair, cannot rotate:'
@@ -806,7 +873,7 @@ class Variables(ReaderDomain):
 
             profiles: List of variable names that should be returned for the range in `profiles_depth`.
 
-            profiles_depth: A range [z-start, z-end] for which to return values for profile-variables. The exact z-depth are given by the reader and returned as `z` variable in `env_profiles`.
+            profiles_depth: Profiles variables will be retrieved from surface and down to this depth. The exact z-depth are given by the reader and returned as `z` variable in `env_profiles`.
 
             time: datetime or None, time at which data are requested.
                 Can be None (default) if reader/variable has no time

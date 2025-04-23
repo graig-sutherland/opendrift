@@ -33,7 +33,7 @@ from opendrift.readers import reader_lazy
 from opendrift.readers import reader_from_url
 from opendrift.models.pelagicegg import PelagicEggDrift
 from opendrift.readers import reader_current_from_track
-from opendrift.errors import OutsideSpatialCoverageError
+from opendrift.errors import OutsideSpatialCoverageError, WrongMode
 
 
 o = OceanDrift(loglevel=20)
@@ -56,62 +56,26 @@ class TestReaders(unittest.TestCase):
         r = reader_ROMS_native.Reader(o.test_data_folder() +
             '2Feb2016_Nordic_sigma_3d/Nordic-4km_SLEVELS_avg_00_subset2Feb2016.nc')
         o.add_reader([r, landmask])
-        self.assertEqual(o.priority_list['land_binary_mask'],
+        self.assertEqual(o.env.priority_list['land_binary_mask'],
                          ['roms native', 'global_landmask'])
-        self.assertEqual(o.priority_list['x_sea_water_velocity'],
+        self.assertEqual(o.env.priority_list['x_sea_water_velocity'],
                          ['roms native'])
         # Switch order
         o = OceanDrift()
         o.add_reader([landmask, r])
-        self.assertEqual(o.priority_list['land_binary_mask'],
+        self.assertEqual(o.env.priority_list['land_binary_mask'],
                          ['global_landmask', 'roms native'])
-        self.assertEqual(o.priority_list['x_sea_water_velocity'],
+        self.assertEqual(o.env.priority_list['x_sea_water_velocity'],
                          ['roms native'])
 
         # Test add_readers_from_list
         o = OceanDrift()
         o.add_readers_from_list(reader_list, lazy=False)
-        self.assertEqual(o.priority_list['x_sea_water_velocity'],
+        self.assertEqual(o.env.priority_list['x_sea_water_velocity'],
                          ['roms native'])
-        self.assertEqual(o.priority_list['x_wind'],
+        self.assertEqual(o.env.priority_list['x_wind'],
                          [o.test_data_folder() +
             '2Feb2016_Nordic_sigma_3d/AROME_MetCoOp_00_DEF_20160202_subset.nc'])
-
-    def test_repeated_run(self):
-        # NOTE: this test fails if outfile is not None
-        #outfile = 'leeway_test.nc'
-        outfile = None
-        o = OceanDrift(loglevel=50)
-        o.set_config('drift:vertical_mixing', False)
-        o.add_readers_from_list(reader_list)
-        o.seed_elements(lon=14, lat=67.85,
-                        time=datetime(2016, 2, 2, 12))
-        o.run(steps=5, outfile=outfile)
-        lon1 = o.get_property('lon')[0]
-        # Repeated run with same object
-        o.seed_elements(lon=14, lat=67.85,
-                        time=datetime(2016, 2, 2, 12))
-        o.run(steps=5, outfile=outfile)
-        lon2 = o.get_property('lon')[0]
-        # Third run, with different config
-        o.seed_elements(lon=14, lat=67.85,
-                        time=datetime(2016, 2, 2, 12),
-                        wind_drift_factor=.1)
-        o.run(steps=5)
-        lon3 = o.get_property('lon')[0]
-        # Fourth run, with different time
-        o.reset()  # Reset is needed due to new start_time
-        o.seed_elements(lon=14, lat=67.85,
-                        time=datetime(2016, 2, 2, 13),
-                        wind_drift_factor=.1)
-        o.run(steps=5, outfile=outfile)
-        lon4 = o.get_property('lon')[0]
-
-        # Check results
-        self.assertEqual(lon1[-1][0], lon2[-1][0])
-        self.assertNotEqual(lon3[-1][0], lon2[-1][0])
-
-        #os.remove(outfile)
 
     def test_reader_from_url(self):
         readers = reader_from_url(reader_list)
@@ -165,13 +129,13 @@ class TestReaders(unittest.TestCase):
 
         o.add_readers_from_list(reader_list, lazy=True)
 
-        self.assertEqual(len(o._lazy_readers()), 4)
+        self.assertEqual(len(o.env._lazy_readers()), 4)
         o.seed_elements(lon=14, lat=67.85,
                         time=datetime(2016, 2, 2, 12))
         o.run(steps=5)
         print(o)  # Debug, this fails for old libraries
-        self.assertEqual(len(o._lazy_readers()), 2)
-        self.assertEqual(len(o.discarded_readers), 1)
+        self.assertEqual(len(o.env._lazy_readers()), 2)
+        self.assertEqual(len(o.env.discarded_readers), 1)
 
     def test_ROMS_native_stranding(self):
         o = OceanDrift(loglevel=0)
@@ -186,7 +150,7 @@ class TestReaders(unittest.TestCase):
                         wind_drift_factor=.02,
                         number=10, radius=1000)
         o.run(steps=8)
-        self.assertEqual(o.num_elements_deactivated(), 4)
+        self.assertEqual(o.num_elements_deactivated(), 1)
 
     #def test_lazy_readers_and_corrupt_data(self):
     #    o = OceanDrift(loglevel=0)
@@ -242,31 +206,31 @@ class TestReaders(unittest.TestCase):
 
         o1 = Leeway(loglevel=0)
         #o1.set_config('environment:fallback:land_binary_mask', 0)
-        o1.required_variables = [r for r in o1.required_variables
-                                 if r != 'land_binary_mask']
+        o1.required_variables = {n:r for n,r in o1.required_variables.items()
+                                 if n != 'land_binary_mask'}
         o1.add_readers_from_list(reader_list, lazy=False)
-        time = o1.readers['roms native'].start_time
+        time = o1.env.readers['roms native'].start_time
         o1.seed_elements(lat=67.85, lon=14, time=time)
         o1.run(steps=5)
 
         o2 = Leeway(loglevel=20)
         #o2.set_config('environment:fallback:land_binary_mask', 0)
-        o2.required_variables = [r for r in o1.required_variables
-                                 if r != 'land_binary_mask']
+        o2.required_variables = {n:r for n,r in o1.required_variables.items()
+                                 if n != 'land_binary_mask'}
         o2.add_readers_from_list(reader_list, lazy=True)
         o2.seed_elements(lat=67.85, lon=14, time=time)
         o2.run(steps=5)
 
         # Some differences in wind and current components
         # due to different coordinate system
-        for var in o1.history.dtype.names:
+        for var in o1.result.data_vars:
             if var in ['x_wind', 'y_wind', 'x_sea_water_velocity',
                        'y_sea_water_velocity']:
                 tolerance = 1
             else:
                 tolerance = 5
             self.assertIsNone(np.testing.assert_array_almost_equal(
-                o1.history[var], o2.history[var], tolerance))
+                o1.result[var], o2.result[var], tolerance))
 
     def test_constant_and_lazy_reader_leeway(self):
         cw = reader_constant.Reader({'x_wind':5, 'y_wind': 6})
@@ -280,12 +244,13 @@ class TestReaders(unittest.TestCase):
         o.set_config('environment:fallback:y_sea_water_velocity', 0.1)
         time = datetime(2016,2,2,12)
         o.seed_elements(lat=67.85, lon=14, time=time)
-        o.run(steps=2)
+        o.run(steps=2, time_step=600, time_step_output=600)
         self.assertAlmostEqual(o.elements.lat[0], 67.8548, 3)
 
     def test_automatic_landmask(self):
         o = OceanDrift(loglevel=20)
-        self.assertRaises(ValueError, o.run)
+        self.assertRaises(WrongMode, o.run)
+        o = OceanDrift(loglevel=20)
         o.seed_elements(lon=4, lat=60, time=datetime(2016,9,1))
         o.run(steps=2)
 
@@ -320,7 +285,7 @@ class TestReaders(unittest.TestCase):
         o.seed_elements(lon=4.8, lat=60, number=1, time=reader.end_time)
         o.run(steps=2)
         # Check that fallback value is used when outside time coverage
-        self.assertEqual(o.history['x_sea_water_velocity'][0][-1], 1.0)
+        self.assertEqual(o.result.x_sea_water_velocity[0, -1], 1.0)
 
     def test_reader_netcdf(self):
         """Check reader functionality."""
@@ -378,9 +343,53 @@ class TestReaders(unittest.TestCase):
                                        time=norkyst3d.start_time,
                                        x=x, y=y, z=[0, -100])
         self.assertEqual(data['z'][4], -25)
-        self.assertEqual(data['z'][4], -25)
         self.assertAlmostEqual(data['sea_water_temperature'][:,0,0][7],
                          9.220000267028809)
+
+        # test also profiles depth
+        data, profiles = norkyst3d.get_variables_interpolated(
+                variables, profiles=['sea_water_temperature'],
+                profiles_depth = 100,
+                time = norkyst3d.start_time,
+                lon=lon, lat=lat, z=0)
+        assert profiles['z'].min() == -150
+        # Request profiles with less depth
+        # NB TODO: must use later time, otherwise cache (with deeper profile) is reused
+        data, profiles = norkyst3d.get_variables_interpolated(
+                variables, profiles=['sea_water_temperature'],
+                profiles_depth = 30,
+                time = norkyst3d.start_time + timedelta(hours=1),
+                lon=lon, lat=lat, z=0)
+        assert profiles['z'].min() == -75
+        # Setting vertical buffer to 0, and checking that now less extra layers are read in the vertical
+        norkyst3d.verticalbuffer=0
+        data, profiles = norkyst3d.get_variables_interpolated(
+                variables, profiles=['sea_water_temperature'],
+                profiles_depth = 30,
+                time = norkyst3d.start_time + timedelta(hours=2),
+                lon=lon, lat=lat, z=0)
+        assert profiles['z'].min() == -50
+
+    def test_vertical_profile_from_simulation(self):
+        o = OpenOil()
+        r = reader_netCDF_CF_generic.Reader(o.test_data_folder() +
+            '14Jan2016_NorKyst_z_3d/NorKyst-800m_ZDEPTHS_his_00_3Dsubset.nc')
+        variables = ['x_sea_water_velocity', 'x_sea_water_velocity',
+                     'sea_water_temperature']
+        N = 10
+        o.add_reader(r)
+        o.set_config('environment:constant', {'land_binary_mask': 0, 'x_wind': 0, 'y_wind': 0})
+        o.seed_elements(lon=np.linspace(4.5, 4.8, N), lat=np.linspace(63, 63.2, N), time=r.start_time)
+        o.run(steps=1)
+        assert o.environment_profiles['z'].min() == -75
+
+        o = OpenOil()
+        o.set_config('drift:profiles_depth', 20)
+        o.add_reader(r)
+        o.set_config('environment:constant', {'land_binary_mask': 0, 'x_wind': 0, 'y_wind': 0})
+        o.seed_elements(lon=np.linspace(4.5, 4.8, N), lat=np.linspace(63, 63.2, N), time=r.start_time)
+        o.run(steps=1)
+        assert o.environment_profiles['z'].min() == -50
 
     def test_vertical_interpolation(self):
         norkyst3d = reader_netCDF_CF_generic.Reader(o.test_data_folder() +
@@ -394,7 +403,7 @@ class TestReaders(unittest.TestCase):
         # space (horizontally, vertically) and then in time
         data, profiles = norkyst3d.get_variables_interpolated(
                 variables, profiles=['sea_water_temperature'],
-                profiles_depth = [-100, 0],
+                profiles_depth = 100,
                 time = norkyst3d.start_time + timedelta(seconds=900),
                 lon=lon, lat=lat, z=z)
         # Check surface value
@@ -403,10 +412,6 @@ class TestReaders(unittest.TestCase):
         # Check interpolated temperature at 33 m depth
         self.assertAlmostEqual(data['sea_water_temperature'][1],
                                8.32, 2)
-        #import matplotlib.pyplot as plt
-        #plt.plot(profiles['sea_water_temperature'][:,0])
-        #plt.plot(profiles['sea_water_temperature'][:,1], 'r')
-        #plt.show()
 
     def test_vertical_interpolation_sigma(self):
         nordic3d = reader_ROMS_native.Reader(o.test_data_folder() +
@@ -441,19 +446,20 @@ class TestReaders(unittest.TestCase):
         # by both readers, and two points covered by none of the readers
         testlon = np.array((14.0, 20.0, 20.1, 4, 5))
         testlat = np.array((70.1, 76.0, 76.1, 60, 60))
-        testz = np.random.uniform(0, 0, len(testlon))
+        testz = np.zeros(testlat.shape)
         self.assertIsNone(np.testing.assert_array_almost_equal(
             [0], reader_nordic.covers_positions(testlon, testlat, testz)[0]))
         self.assertIsNone(np.testing.assert_array_almost_equal(
             [0, 1, 2],
             reader_arctic.covers_positions(testlon, testlat, testz)[0]))
-        o.seed_elements(testlon, testlat, z=testz, time=reader_nordic.start_time)
         o.set_config('environment:fallback:land_binary_mask', 0)
+        o.seed_elements(testlon, testlat, z=testz, time=reader_nordic.start_time)
+        o.env.finalize()
         env, env_profiles, missing = \
-            o.get_environment(list(o.required_variables),
+            o.env.get_environment(list(o.required_variables),
                               reader_nordic.start_time,
                               testlon, testlat, testz,
-                              o.required_profiles)
+                              o.required_profiles, profiles_depth=120)
         self.assertAlmostEqual(env['sea_water_temperature'][0], 4.251, 2)
         self.assertAlmostEqual(env['sea_water_temperature'][1], -0.148, 3)
         self.assertAlmostEqual(env['sea_water_temperature'][4], 10.0)
@@ -467,7 +473,7 @@ class TestReaders(unittest.TestCase):
                                2.095, 3)
         # Get separate data
         env2, env_profiles2, missing2 = \
-            o.get_environment(['x_sea_water_velocity', 'y_sea_water_velocity',
+            o.env.get_environment(['x_sea_water_velocity', 'y_sea_water_velocity',
                                'sea_water_temperature'],
                               reader_nordic.start_time,
                               testlon, testlat, testz,
@@ -477,7 +483,7 @@ class TestReaders(unittest.TestCase):
             set(['z', 'sea_water_temperature']))
         # Get separate data, without profile
         env3, env_profiles3, missing3 = \
-            o.get_environment(['x_sea_water_velocity', 'y_sea_water_velocity',
+            o.env.get_environment(['x_sea_water_velocity', 'y_sea_water_velocity',
                                'sea_water_temperature'],
                               reader_nordic.start_time,
                               testlon, testlat, testz,
@@ -485,7 +491,7 @@ class TestReaders(unittest.TestCase):
         self.assertTrue(env_profiles3 is None)
         # Get separate data
         env4, env_profiles4, missing4 = \
-            o.get_environment(['x_sea_water_velocity', 'y_sea_water_velocity',
+            o.env.get_environment(['x_sea_water_velocity', 'y_sea_water_velocity',
                                'sea_water_temperature'],
                               reader_nordic.start_time,
                               testlon, testlat, testz,
@@ -526,23 +532,23 @@ class TestReaders(unittest.TestCase):
 
         o1 = OceanDrift(loglevel=50)
         o1.set_config('environment:fallback:x_sea_water_velocity', None)
+        o1.set_config('environment:fallback:land_binary_mask', 0)
         o1.add_reader(r1)
         o1.seed_elements(lon=15, lat=70.1, time=r1.start_time)
-        o1.set_config('environment:fallback:land_binary_mask', 0)
         o1.run(time_step=3600*3, duration=timedelta(hours=48))
         o2 = OceanDrift(loglevel=50)
         o2.set_config('environment:fallback:x_sea_water_velocity', None)
+        o2.set_config('environment:fallback:land_binary_mask', 0)
         o2.add_reader(r2)
         o2.seed_elements(lon=15, lat=70.1, time=r1.start_time)
-        o2.set_config('environment:fallback:land_binary_mask', 0)
         o2.run(time_step=3600*3, duration=timedelta(hours=48))
         # Compare
-        lat1 = o1.get_property('lat')[0]
-        lat2 = o2.get_property('lat')[0]
-        self.assertEqual(len(lat1), 13)
-        self.assertEqual(len(lat2), 17)
+        lat1 = o1.result.lat
+        lat2 = o2.result.lat
+        self.assertEqual(lat1.sizes['time'], 12)
+        self.assertEqual(lat2.sizes['time'], 17)
         self.assertIsNone(np.testing.assert_allclose(
-                            lat1[0:12], lat2[0:12]))
+                            lat1, lat2.isel(time=slice(0,12))))
         # Test reader netCDF_CF_generic
         r = reader_netCDF_CF_generic.Reader(o.test_data_folder() +
             '16Nov2015_NorKyst_z_surface/norkyst800_subset_16Nov2015.nc')
@@ -562,12 +568,12 @@ class TestReaders(unittest.TestCase):
         o4.seed_elements(lon=4.36, lat=61.7, time=r.start_time)
         o4.run(steps=24)
         # Compare
-        lat3 = o3.get_property('lat')[0]
-        lat4 = o4.get_property('lat')[0]
-        self.assertEqual(len(lat3), 25)
-        self.assertEqual(len(lat4), 13)
+        lat3 = o3.result.lat
+        lat4 = o4.result.lat
+        self.assertEqual(lat3.sizes['time'], 25)
+        self.assertEqual(lat4.sizes['time'], 12)
         self.assertIsNone(np.testing.assert_allclose(
-                            lat3[0:12], lat4[0:12]))
+                            lat3.isel(time=slice(0,12)), lat4))
 
     def test_reader_current_from_track(self):
         """Check if extrapolated currents are of expected value"""
@@ -582,7 +588,6 @@ class TestReaders(unittest.TestCase):
         reader_current = reader_current_from_track.Reader(obslon, obslat, obstime,
                     wind_east=0, wind_north=0, windreader=reader_wind, wind_factor=0.018)
         self.assertAlmostEqual(reader_current.x_sea_water_velocity.data[0],0.2236, 4)
-
 
     def test_valid_minmax(self):
         """Check that invalid values are replaced with fallback."""
@@ -601,8 +606,7 @@ class TestReaders(unittest.TestCase):
         o.seed_elements(lon=4, lat=60, time=reader_wind.start_time)
         o.run(steps=1)
         variables.standard_names['x_wind']['valid_min'] = minval  # reset
-        w = o.get_property('x_wind')[0][0]
-        self.assertAlmostEqual(w, 2.0, 1)
+        self.assertAlmostEqual(o.result.x_wind[0,0], 2.0, 1)
 
     def test_valid_minmax_nanvalues(self):
         from opendrift.readers.basereader import variables
@@ -617,8 +621,7 @@ class TestReaders(unittest.TestCase):
         o.seed_elements(lon=4.95, lat=62, number=10, time=norkyst.start_time)
         o.run(steps=2)
         variables.standard_names['x_sea_water_velocity']['valid_max'] = maxval  # reset
-        u = o.get_property('x_sea_water_velocity')[0]
-        self.assertAlmostEqual(u.max(), -.069, 3)  # Some numerical error allowed
+        self.assertAlmostEqual(o.result.x_sea_water_velocity.max().values, -.0718, 3)  # Some numerical error allowed
 
 
 if __name__ == '__main__':

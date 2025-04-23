@@ -3,7 +3,7 @@
 Double gyre - LCS with particles
 ============================================
 
-Drift of particles in an idealised (analytical) eddy current field, 
+Drift of particles in an idealised (analytical) eddy current field,
 plotted on top of the LCS. This takes some minutes to calculate.
 """
 
@@ -27,7 +27,6 @@ o = OceanDrift(loglevel=20)
 #%%
 # Note that Runge-Kutta here makes a difference to Euler scheme
 o.set_config('drift:advection_scheme', 'runge-kutta4')
-o.disable_vertical_motion()
 o.set_config('environment:fallback:land_binary_mask', 0)
 
 double_gyre = reader_double_gyre.Reader(epsilon=.25, omega=0.628, A=0.1)
@@ -43,14 +42,13 @@ lcs = o.calculate_ftle(time=times, time_step=time_step,
 
 #%%
 # Make run with particles for the same period
-o.reset()
+o = o.clone()
 x = [.9]
 y = [.5]
 lon, lat = double_gyre.xy2lonlat(x, y)
 
-o.seed_elements(lon, lat, radius=.15, number=2000,
+o.seed_elements(lon, lat, radius=.12, number=2000,
                 time=double_gyre.initial_time)
-o.disable_vertical_motion()
 o.run(duration=duration, time_step=time_step,
       time_step_output=time_step_output)
 o.animation(buffer=0, lcs=lcs, hide_landmask=True)

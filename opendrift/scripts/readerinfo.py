@@ -26,21 +26,7 @@ import sys
 import argparse
 from datetime import datetime
 import numpy as np
-
-try:
-    from opendrift.readers import reader_netCDF_CF_generic
-    from opendrift.readers import reader_netCDF_CF_unstructured
-    from opendrift.readers import reader_ROMS_native
-
-    readers = [reader_netCDF_CF_generic, reader_ROMS_native, reader_netCDF_CF_unstructured]
-    try:
-        from opendrift.readers import reader_grib
-        readers.append(reader_grib)
-    except:
-        pass
-
-except ImportError: # development
-    sys.exit('Please add opendrift folder to your PYTHONPATH.')
+from opendrift.readers import applicable_readers
 
 
 def main():
@@ -67,6 +53,10 @@ def main():
 
     args = parser.parse_args()
 
+    readers = applicable_readers(args.filename)
+    if len(readers) == 0:
+        raise ValueError(f'No applicable readers for {args.filename}')
+
     for reader in readers:
         try:
             print('Testing %s...' % reader.__file__)
@@ -84,28 +74,23 @@ def main():
     if not 'r' in locals():
         sys.exit('No readers applicable for ' + args.filename)
 
+    if args.time is None:
+        time = r.start_time
+    else:
+        time = datetime.strptime(args.time, '%Y%m%d%H%M')
+        #raise ValueError('Both lon, lat and time must be given')
+
     if args.lon is not None:
-        if args.lon is None or args.time is None:
-            raise ValueError('Both lon, lat and time must be given')
         lon = np.atleast_1d(float(args.lon))
         lat = np.atleast_1d(float(args.lat))
         x,y = r.lonlat2xy(lon, lat)
-        time = datetime.strptime(args.time, '%Y%m%d%H%M')
         r.buffer=3
         i=3; j=3  # center of block
         variables = [var for var in r.variables if
                      var not in ('time') and 'time' not in var]
-        data = r.get_variables(variables, time, x, y, z=0)
-        for var in variables:
-            if data[var].ndim == 2:
-                print('%s : %s' % (var, data[var][i,j]))
-            elif data[var].ndim == 3:
-                print('%s : %s' % (var, data[var][0, i,j]))
-            else:
-                pass
-        if 'x_wind' in variables and 'y_wind' in variables:
-            print('windspeed : %s' % np.sqrt(
-                data['x_wind'][i,j]**2 + data['y_wind'][i,j]**2))
+        data, dummy = r.get_variables_interpolated_xy(variables, time=time, x=x, y=y, z=0)
+        for var, value in data.items():
+            print(f'{var}: {value}')
 
     if args.variable != 'noplot':
         if args.variable is None:
@@ -120,7 +105,7 @@ def main():
             else:
                 vmax = float(args.vmax)
 
-            r.plot(args.variable, vmin=vmin, vmax=vmax)
+            r.plot(args.variable, vmin=vmin, vmax=vmax, time=time)
 
 if __name__ == '__main__':
     main()

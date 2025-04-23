@@ -18,7 +18,7 @@ import numpy as np
 import logging; logger = logging.getLogger(__name__)
 
 from opendrift.models.oceandrift import OceanDrift, Lagrangian3DArray
-#from opendrift.elements import LagrangianArray
+from opendrift.config import CONFIG_LEVEL_ESSENTIAL, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
 
 
 # Defining the oil element properties
@@ -59,6 +59,7 @@ class PelagicEggDrift(OceanDrift):
     required_variables = {
         'x_sea_water_velocity': {'fallback': 0},
         'y_sea_water_velocity': {'fallback': 0},
+        'sea_surface_height': {'fallback': 0},
         'sea_surface_wave_significant_height': {'fallback': 0},
         'sea_ice_area_fraction': {'fallback': 0},
         'x_wind': {'fallback': 0},
@@ -76,8 +77,6 @@ class PelagicEggDrift(OceanDrift):
         'upward_sea_water_velocity': {'fallback': 0},
       }
 
-    # The depth range (in m) which profiles shall cover
-    required_profiles_z_range = [-120, 0]
 
     # Default colors for plotting
     status_colors = {'initial': 'green', 'active': 'blue',

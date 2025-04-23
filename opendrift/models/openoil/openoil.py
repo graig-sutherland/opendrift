@@ -51,6 +51,10 @@ The droplet diameter may be given explicitly when seeding, e.g.:
 
 
     o = OpenOil()
+    o.set_config('environment:constant:x_wind', 0)
+    o.set_config('environment:constant:y_wind', 0)
+    o.set_config('environment:constant:x_sea_water_velocity', 0)
+    o.set_config('environment:constant:y_sea_water_velocity', 0)
     o.seed_elements(4, 60, number=100, time=datetime.now(), diameter=1e-5)
 
 In this case, the diameter will not change during the simulation, which is useful e.g. for sensitivity tests. The same diameter will be used for all elements for this example, but an array of the same length as the number of elements may also be provided.
@@ -62,23 +66,38 @@ If a constant droplet diameter is not given by the user, it will be chosen rando
     o.set_config('seed:droplet_diameter_min_subsea', 0.0005)  # 0.5 mm
     o.set_config('seed:droplet_diameter_max_subsea', 0.005)   # 5 mm
 
+Alternatively, the user can specify normal or lognormal initial subsea droplet size distributions, which are later modified by wave breaking events. In these cases the user must specify the mean and standard deviation of the distribution::
+
+.. code::
+
+    o.set_config('seed:droplet_size_distribution','lognormal')
+    o.set_config('seed:droplet_diameter_mu',0.001)  # 1 mm
+    o.set_config('seed:droplet_diameter_sigma',0.0008) # 0.8 mm
+
 Note that these config settings must be adjusted before the seeding call.
 After each wave breaking event, a new droplet diameter will be chosen based on the config setting for droplet size distribution.
 """
 
+import os
 from io import open
+from importlib.resources import files
 import numpy as np
 from datetime import datetime
 import pyproj
 import matplotlib.pyplot as plt
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
 from opendrift.models.oceandrift import OceanDrift, Lagrangian3DArray
 from . import noaa_oil_weathering as noaa
 from . import adios
+from adios_db.computation.physical_properties import KinematicViscosity, Density
+from adios_db.computation import gnome_oil
+
 from opendrift.models.physics_methods import oil_wave_entrainment_rate_li2017
+from opendrift.config import CONFIG_LEVEL_ESSENTIAL, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
 
 
 # Defining the oil element properties
@@ -98,7 +117,7 @@ class Oil(Lagrangian3DArray):
                 'dtype': np.float32,
                 'units': 'm2/s',
                 'seed': False,  # Taken from NOAA database
-                'description': 'Kinematic viscosity of oil',
+                'description': 'Kinematic viscosity of oil (emulsion)',
                 'default': 0.005
             }),
         (
@@ -153,9 +172,15 @@ class Oil(Lagrangian3DArray):
             'seed': False,
             'default': 0
         }),
+        ('biodegradation_half_time_droplet',  # Note: if unit is "days", Xarray tries to decode as datetime with error
+                {'dtype': np.float32, 'units': 'Days', 'seed': False, 'default': 1,
+                 'description': 'Biodegradation half time in days for submerged oil droplets'}),
+        ('biodegradation_half_time_slick',
+                {'dtype': np.float32, 'units': 'Days', 'seed': False, 'default': 3,
+                 'description': 'Biodegradation half time in days for surface oil slick'}),
         ('fraction_evaporated', {
             'dtype': np.float32,
-            'units': '%',
+            'units': '%',  # TODO: should be fraction and not percent
             'seed': False,
             'default': 0
         }),
@@ -205,6 +230,7 @@ class OpenOil(OceanDrift):
         'y_wind': {
             'fallback': None
         },
+        'sea_surface_height': {'fallback': 0},
         'upward_sea_water_velocity': {
             'fallback': 0,
             'important': False
@@ -267,10 +293,6 @@ class OpenOil(OceanDrift):
         },
     }
 
-    # The depth range (in m) which profiles shall cover
-    required_profiles_z_range = [-20, 0]
-
-    max_speed = 1.3  # m/s
 
     # Default colors for plotting
     status_colors = {
@@ -283,7 +305,7 @@ class OpenOil(OceanDrift):
     }
 
     duplicate_oils = ['ALVHEIM BLEND, STATOIL', 'DRAUGEN, STATOIL',
-                  'EKOFISK BLEND 2000', 'EKOFISK BLEND, STATOIL',
+                  'EKOFISK BLEND, STATOIL',
                   'EKOFISK, CITGO', 'EKOFISK, EXXON', 'EKOFISK, PHILLIPS',
                   'EKOFISK, STATOIL', 'ELDFISK', 'ELDFISK B',
                   'GLITNE, STATOIL', 'GOLIAT BLEND, STATOIL',
@@ -297,12 +319,6 @@ class OpenOil(OceanDrift):
                   'SLEIPNER CONDENSATE, STATOIL',
                   'STATFJORD BLEND, STATOIL', 'VARG, STATOIL']
 
-    # Workaround as ADIOS oil library uses
-    # max water fraction of 0.9 for all crude oils
-    max_water_fraction = {
-        'MARINE GAS OIL 500 ppm S 2017': 0.1,
-        'FENJA (PIL) 2015': .75
-    }
 
     def __init__(self, weathering_model='noaa', *args, **kwargs):
         self.oil_weathering_model = weathering_model
@@ -311,14 +327,14 @@ class OpenOil(OceanDrift):
             self.oiltypes = adios.get_oil_names(
                 location=kwargs.get('location', None))
 
-            # Update config with oiltypes
-            self.oiltypes.extend(adios.oil_name_alias.keys())
-
             # Sort alphabetically, but put GENERIC oils first
             generic_oiltypes = [o for o in self.oiltypes if o[0:7] == 'GENERIC']
             other_oiltypes = [o for o in self.oiltypes if o[0:7] != 'GENERIC']
             self.oiltypes = sorted([o for o in generic_oiltypes]) + sorted([o for o in other_oiltypes])
             self.oiltypes = [ot for ot in self.oiltypes if ot not in self.duplicate_oils]
+
+            # For Norwegian oils, max water fraction from Sintef is overriding NOAA value
+            self.max_water_fraction = None
         else:
             raise ValueError('Weathering model unknown: ' + weathering_model)
 
@@ -336,7 +352,38 @@ class OpenOil(OceanDrift):
                 'units': 'm3 per hour',
                 'description':
                 'The amount (volume) of oil released per hour (or total amount if release is instantaneous)',
-                'level': self.CONFIG_LEVEL_ESSENTIAL
+                'level': CONFIG_LEVEL_ESSENTIAL
+            },
+            'seed:droplet_size_distribution': {
+                'type':
+                'enum',
+                'enum': ['uniform', 'normal', 'lognormal'],
+                'default':
+                'uniform',
+                'level':
+                CONFIG_LEVEL_ADVANCED,
+                'description':
+                'Droplet size distribution used for subsea release.'
+            },
+            'seed:droplet_diameter_mu': {
+                'type': 'float',
+                'default': 0.001,
+                'min': 1e-8,
+                'max': 1,
+                'units': 'meters',
+                'description':
+                'The mean diameter of oil droplet for a subsea release, used in normal/lognormal distributions.',
+                'level': CONFIG_LEVEL_BASIC
+            },
+            'seed:droplet_diameter_sigma': {
+                'type': 'float',
+                'default': 0.0005,
+                'min': 1e-8,
+                'max': 1,
+                'units': 'meters',
+                'description':
+                'The standard deviation in diameter of oil droplet for a subsea release, used in normal/lognormal distributions.',
+                'level': CONFIG_LEVEL_BASIC
             },
             'seed:droplet_diameter_min_subsea': {
                 'type': 'float',
@@ -345,8 +392,8 @@ class OpenOil(OceanDrift):
                 'max': 1,
                 'units': 'meters',
                 'description':
-                'The minimum diameter of oil droplet for a subsea release.',
-                'level': self.CONFIG_LEVEL_BASIC
+                'The minimum diameter of oil droplet for a subsea release, used in unifrom distribution.',
+                'level': CONFIG_LEVEL_BASIC
             },
             'seed:droplet_diameter_max_subsea': {
                 'type': 'float',
@@ -355,41 +402,47 @@ class OpenOil(OceanDrift):
                 'max': 1,
                 'units': 'meters',
                 'description':
-                'The maximum diameter of oil droplet for a subsea release.',
-                'level': self.CONFIG_LEVEL_BASIC
+                'The maximum diameter of oil droplet for a subsea release, used in uniform distribution.',
+                'level': CONFIG_LEVEL_BASIC
             },
             'processes:dispersion': {
                 'type': 'bool',
                 'default': True,
                 'description':
                 'Oil is removed from simulation (dispersed), if entrained as very small droplets.',
-                'level': self.CONFIG_LEVEL_BASIC
+                'level': CONFIG_LEVEL_BASIC
             },
             'processes:evaporation': {
                 'type': 'bool',
                 'default': True,
                 'description': 'Surface oil is evaporated.',
-                'level': self.CONFIG_LEVEL_BASIC
+                'level': CONFIG_LEVEL_BASIC
             },
             'processes:emulsification': {
                 'type': 'bool',
                 'default': True,
                 'description':
                 'Surface oil is emulsified, i.e. water droplets are mixed into oil due to wave mixing, with resulting increas of viscosity.',
-                'level': self.CONFIG_LEVEL_BASIC
+                'level': CONFIG_LEVEL_BASIC
             },
             'processes:biodegradation': {
                 'type': 'bool',
                 'default': False,
                 'description': 'Oil mass is biodegraded (eaten by bacteria).',
-                'level': self.CONFIG_LEVEL_BASIC
+                'level': CONFIG_LEVEL_BASIC
+            },
+            'biodegradation:method': {
+                'type': 'enum',
+                'enum': ['Adcroft', 'half_time'],
+                'default': 'Adcroft', 'level': CONFIG_LEVEL_ADVANCED,
+                'description': 'Alogorithm to be used for biodegradation of oil'
             },
             'processes:update_oilfilm_thickness': {
                 'type': 'bool',
                 'default': False,
                 'description':
                 'Oil film thickness is calculated at each time step. The alternative is that oil film thickness is kept constant with value provided at seeding.',
-                'level': self.CONFIG_LEVEL_ADVANCED
+                'level': CONFIG_LEVEL_ADVANCED
             },
             'wave_entrainment:droplet_size_distribution': {
                 'type':
@@ -398,7 +451,7 @@ class OpenOil(OceanDrift):
                 'default':
                 'Johansen et al. (2015)',
                 'level':
-                self.CONFIG_LEVEL_ADVANCED,
+                CONFIG_LEVEL_ADVANCED,
                 'description':
                 'Algorithm to be used for calculating oil droplet size spectrum after entrainment by breaking waves.'
             },
@@ -409,7 +462,7 @@ class OpenOil(OceanDrift):
                 'default':
                 'Li et al. (2017)',
                 'level':
-                self.CONFIG_LEVEL_ADVANCED,
+                CONFIG_LEVEL_ADVANCED,
                 'description':
                 'Algorithm to be used for calculating the entrainment rate of oil due to wave breaking.'
             },
@@ -421,7 +474,7 @@ class OpenOil(OceanDrift):
                 'default':
                 self.oiltypes[0],
                 'level':
-                self.CONFIG_LEVEL_ESSENTIAL,
+                CONFIG_LEVEL_ESSENTIAL,
                 'description':
                 'Oil type to be used for the simulation, from the NOAA ADIOS database.'
             },
@@ -431,6 +484,7 @@ class OpenOil(OceanDrift):
         self._set_config_default('drift:vertical_mixing', True)
         self._set_config_default('drift:current_uncertainty', 0.05)
         self._set_config_default('drift:wind_uncertainty', 0.5)
+        self._set_config_default('drift:max_speed', 1.3)
 
     def update_surface_oilfilm_thickness(self):
         '''The mass of oil is summed within a grid of 100x100
@@ -492,32 +546,57 @@ class OpenOil(OceanDrift):
 
     def biodegradation(self):
         if self.get_config('processes:biodegradation') is True:
-            '''
-            Oil biodegradation function based on the article:
-            Adcroft et al. (2010), Simulations of underwater plumes of
-            dissolved oil in the Gulf of Mexico.
-            '''
-            logger.debug('Calculating: biodegradation')
+            method = self.get_config('biodegradation:method')
+            logger.debug(f'Calculating: biodegradation ({method})')
+            if method == 'Adcroft':
+                self.biodegradation_adcroft()
+            elif method == 'half_time':
+                self.biodegradation_half_time()
 
-            swt = self.environment.sea_water_temperature.copy()
-            swt[swt > 100] -= 273.15  # K to C
-            age0 = self.time_step.total_seconds() / (3600 * 24)
+    def biodegradation_half_time(self):
+        '''Oil biodegradation with exponential decay'''
 
-            # Decay rate in days (temperature in Celsius)
-            tau = (12) * (3**((20 - swt) / 10))
+        surface = np.where(self.elements.z == 0)[0]  # of active elements
+        age0 = self.time_step.total_seconds()/(3600*24)  # days
 
-            fraction_biodegraded = (1 - np.exp(-age0 / tau))
-            biodegraded_now = self.elements.mass_oil * fraction_biodegraded
+        half_time = self.elements.biodegradation_half_time_droplet.copy()
+        half_time[surface] = self.elements.biodegradation_half_time_slick[surface]
 
-            self.elements.mass_biodegraded = \
-                self.elements.mass_biodegraded + biodegraded_now
-            self.elements.mass_oil = \
-                self.elements.mass_oil - biodegraded_now
-            if self.oil_weathering_model == 'noaa':
-                self.noaa_mass_balance['mass_components'][self.elements.ID - 1, :] = \
-                self.noaa_mass_balance['mass_components'][self.elements.ID - 1, :]*(1-fraction_biodegraded[:, np.newaxis])
-            else:
-                pass
+        fraction_biodegraded = (1 - np.exp(-age0 / half_time))
+        biodegraded_now = self.elements.mass_oil * fraction_biodegraded
+
+        self.elements.mass_biodegraded = \
+            self.elements.mass_biodegraded + biodegraded_now
+        self.elements.mass_oil = \
+            self.elements.mass_oil - biodegraded_now
+        if self.oil_weathering_model == 'noaa':
+            self.noaa_mass_balance['mass_components'][self.elements.ID, :] = \
+            self.noaa_mass_balance['mass_components'][self.elements.ID, :]*(1-fraction_biodegraded[:, np.newaxis])
+
+    def biodegradation_adcroft(self):
+        '''
+        Oil biodegradation function based on the article:
+        Adcroft et al. (2010), Simulations of underwater plumes of
+        dissolved oil in the Gulf of Mexico.
+        '''
+
+        swt = self.environment.sea_water_temperature.copy()
+        swt[swt > 100] -= 273.15  # K to C
+        age0 = self.time_step.total_seconds() / (3600 * 24)
+
+        # Decay rate in days (temperature in Celsius)
+        tau = (12) * (3**((20 - swt) / 10))
+
+        fraction_biodegraded = (1 - np.exp(-age0 / tau))
+        biodegraded_now = self.elements.mass_oil * fraction_biodegraded
+
+        self.elements.mass_biodegraded = \
+            self.elements.mass_biodegraded + biodegraded_now
+        self.elements.mass_oil = \
+            self.elements.mass_oil - biodegraded_now
+        if self.oil_weathering_model == 'noaa':
+            self.noaa_mass_balance['mass_components'][self.elements.ID, :] = \
+            self.noaa_mass_balance['mass_components'][self.elements.ID, :]*(1-fraction_biodegraded[:, np.newaxis])
 
     def disperse(self):
         if self.get_config('processes:dispersion') is True:
@@ -589,7 +668,6 @@ class OpenOil(OceanDrift):
         self.timer_end('main loop:updating elements:oil weathering')
 
     def prepare_run(self):
-
         if self.oil_weathering_model == 'noaa':
             self.noaa_mass_balance = {}
             # Populate with seeded mass spread on oiltype.mass_fraction
@@ -606,6 +684,23 @@ class OpenOil(OceanDrift):
                 self.oiltype.oil_water_surface_tension()
             logger.info('Oil-water surface tension is %f Nm' %
                         self.oil_water_interfacial_tension)
+        try:
+            with open(files('opendrift.models.openoil.adios').joinpath('max_water_fraction.json')) as f:
+                max_water_fractions = json.loads(f.read())
+            if self.oil_name in max_water_fractions:
+                self.max_water_fraction = max_water_fractions[self.oil_name]
+                T = self.max_water_fraction['temperatures']
+                wf = self.max_water_fraction['max_water_fraction']
+                logger.info(f'Using max water fractions {wf} for temperatures {T} for oiltype {self.oil_name}')
+                logger.info('Corresponding max water fraction from GNOME is '
+                            f'{self.oiltype.gnome_oil["emulsion_water_fraction_max"]}')
+            else:
+                logger.info(f'Max water fraction not available for {self.oil_name}, using default')
+        except Exception as e:
+            logger.warning('Could not load max water content file')
+            print(e)
+
+        super(OpenOil, self).prepare_run()
 
     def oil_weathering_noaa(self):
         '''Oil weathering scheme adopted from NOAA PyGNOME model:
@@ -621,14 +716,13 @@ class OpenOil(OceanDrift):
         #########################################################
         self.timer_start(
             'main loop:updating elements:oil weathering:updating viscosities')
-        oil_viscosity = self.oiltype.kvis_at_temp(
-            self.environment.sea_water_temperature)
+        oil_viscosity = self.KinematicViscosity.at_temp(
+                self.environment.sea_water_temperature)
         self.timer_end(
             'main loop:updating elements:oil weathering:updating viscosities')
         self.timer_start(
             'main loop:updating elements:oil weathering:updating densities')
-        oil_density = self.oiltype.density_at_temp(
-            self.environment.sea_water_temperature)
+        oil_density = self.Density.at_temp(self.environment.sea_water_temperature)
         self.timer_end(
             'main loop:updating elements:oil weathering:updating densities')
 
@@ -644,11 +738,13 @@ class OpenOil(OceanDrift):
         kv1 = np.sqrt(oil_viscosity) * visc_curvfit_param
         kv1[kv1 < 1] = 1
         kv1[kv1 > 10] = 10
+        # NB: neglecting dispersed and biodegraded in calculation of fraction_evaporated
         self.elements.fraction_evaporated = self.elements.mass_evaporated / (
             self.elements.mass_oil + self.elements.mass_evaporated)
+
         self.elements.viscosity = (
-            oil_viscosity * np.exp(kv1 * self.elements.fraction_evaporated) *
-            (1 + (fw_d_fref / (1.187 - fw_d_fref)))**2.49)
+            oil_viscosity * np.exp(kv1 * self.elements.fraction_evaporated) * 
+                (1 + (fw_d_fref / (1.187 - fw_d_fref)))**2.49)
 
         if self.get_config('processes:evaporation') is True:
             self.timer_start(
@@ -700,8 +796,8 @@ class OpenOil(OceanDrift):
             fraction_dispersed[fraction_dispersed >= 1] = .99
         oil_mass_loss = fraction_dispersed * self.elements.mass_oil
 
-        self.noaa_mass_balance['mass_components'][self.elements.ID - 1, :] = \
-            self.noaa_mass_balance['mass_components'][self.elements.ID - 1, :]*(1-fraction_dispersed[:, np.newaxis])
+        self.noaa_mass_balance['mass_components'][self.elements.ID, :] = \
+            self.noaa_mass_balance['mass_components'][self.elements.ID, :]*(1-fraction_dispersed[:, np.newaxis])
 
         self.elements.mass_oil -= oil_mass_loss
         self.elements.mass_dispersed += oil_mass_loss
@@ -724,7 +820,7 @@ class OpenOil(OceanDrift):
             logger.debug('All surface oil elements older than 24 hours, ' +
                          'skipping further evaporation.')
             return
-        surfaceID = self.elements.ID[surface] - 1  # of any elements
+        surfaceID = self.elements.ID[surface]  # of any elements
         # Area for each element, repeated for each component
         volume = (self.elements.mass_oil[surface] /
                   self.elements.density[surface])
@@ -746,21 +842,44 @@ class OpenOil(OceanDrift):
 
     def emulsification_noaa(self):
         #############################################
-        # Emulsification (surface only?)
+        # Emulsification (surface only)
         #############################################
         logger.debug('    Calculating emulsification - NOAA')
         emul_time = self.oiltype.bulltime
         emul_constant = self.oiltype.bullwinkle
+
+        # Emulsify...
+        # f ((le_age >= emul_time && emul_time >= 0.) || frac_evap[i] >= emul_C && emul_C > 0.)
+
+        start_emulsion = np.where((
+            (self.elements.age_seconds >= emul_time) & (emul_time >= 0))
+                                  | ((self.elements.fraction_evaporated >= emul_constant)
+                                     & (emul_constant > 0)))[0]
+        if len(start_emulsion) == 0:
+            logger.debug('        Emulsification not yet started')
+            return
+
         # max water content fraction - get from database
-        Y_max = self.oiltype.emulsion_water_fraction_max
-        if self.oil_name in self.max_water_fraction:
-            max_water_fraction = self.max_water_fraction[self.oil_name]
-            logger.debug(
-                'Overriding max water fraxtion with value %f instead of default %f'
-                % (max_water_fraction, Y_max))
-            Y_max = max_water_fraction
+        Y_max = np.atleast_1d(self.oiltype.emulsion_water_fraction_max)
+        if self.max_water_fraction is not None:
+            wf = self.max_water_fraction['max_water_fraction']
+            wft = self.max_water_fraction['temperatures']
+            if len(wf) == 1:
+                wf = [wf, wf]
+                wft = [wft, wft]
+            swt = self.environment.sea_water_temperature[start_emulsion] - 273.15  # to Celcius
+            weights = (wft[1] - swt) / (wft[1] - wft[0])
+            weights[swt>wft[1]] = 0
+            weights[swt<=wft[0]] = 1
+            max_water_fraction_sintef = weights*wf[0] + (1-weights)*wf[1]
+
+            if (Y_max - max_water_fraction_sintef).min() > 0:
+                logger.debug(
+                    f'Overriding max water fraction {Y_max} with linear fit to SINTEF max values:'
+                    f' T: {wft}, Fraction: {wf}')
+                Y_max = np.array(np.minimum(Y_max, max_water_fraction_sintef))
         # emulsion
-        if Y_max <= 0:
+        if Y_max.max() <= 0:
             logger.debug('Oil does not emulsify, returning.')
             return
         # Constants for droplets
@@ -768,19 +887,6 @@ class OpenOil(OceanDrift):
         drop_max = 1.0e-5
         S_max = (6. / drop_min) * (Y_max / (1.0 - Y_max))
         S_min = (6. / drop_max) * (Y_max / (1.0 - Y_max))
-        # Emulsify...
-        fraction_evaporated = self.elements.mass_evaporated / (
-            self.elements.mass_evaporated + self.elements.mass_oil)
-        # f ((le_age >= emul_time && emul_time >= 0.) || frac_evap[i] >= emul_C && emul_C > 0.)
-
-        start_emulsion = np.where((
-            (self.elements.age_seconds >= emul_time) & (emul_time >= 0))
-                                  | ((fraction_evaporated >= emul_constant)
-                                     & (emul_constant > 0)))[0]
-        if len(start_emulsion) == 0:
-            logger.debug('        Emulsification not yet started')
-            return
-
         if self.oiltype.bulltime > 0:  # User has set value
             start_time = self.oiltype.bulltime * np.ones(len(start_emulsion))
         else:
@@ -789,23 +895,17 @@ class OpenOil(OceanDrift):
             start_time[self.elements.age_seconds[start_emulsion] >=
                        0] = self.elements.bulltime[start_emulsion]
         # Update droplet interfacial area
-        k_emul = noaa.water_uptake_coefficient(
-            self.oiltype,
-            self.wind_speed()[start_emulsion])
+        k_emul = noaa.water_uptake_coefficient(self.oiltype, self.wind_speed()[start_emulsion])
         self.elements.interfacial_area[start_emulsion] = \
             self.elements.interfacial_area[start_emulsion] + \
-            (k_emul*self.time_step.total_seconds()*
-             np.exp((-k_emul/S_max)*(
+            (k_emul*self.time_step.total_seconds()* np.exp((-k_emul/S_max)*(
                 self.elements.age_seconds[start_emulsion] - start_time)))
-        self.elements.interfacial_area[
-            self.elements.interfacial_area > S_max] = S_max
+        self.elements.interfacial_area[start_emulsion] = np.minimum(self.elements.interfacial_area[start_emulsion], S_max)
         # Update water fraction
         self.elements.water_fraction[start_emulsion] = (
-            self.elements.interfacial_area[start_emulsion] * drop_max /
-            (6.0 +
+            self.elements.interfacial_area[start_emulsion] * drop_max / (6.0 +
              (self.elements.interfacial_area[start_emulsion] * drop_max)))
-        self.elements.water_fraction[self.elements.interfacial_area >= (
-            (6.0 / drop_max) * (Y_max / (1.0 - Y_max)))] = Y_max
+        self.elements.water_fraction[start_emulsion] = np.minimum(self.elements.water_fraction[start_emulsion], Y_max)
 
     def update_terminal_velocity(self,
                                  Tprofiles=None,
@@ -956,7 +1056,7 @@ class OpenOil(OceanDrift):
         elif dm == 'Li et al. (2017)':
             return self.get_wave_breaking_droplet_diameter_liz2017()
         else:
-            raise Exception("no droplet size distribution specified")
+            raise Exception("no wave entrainment droplet size distribution specified")
 
     def get_wave_breaking_droplet_diameter_liz2017(self):
         # Li,Zhengkai, M. Spaulding, D. French-McCay, D. Crowley, J.R. Payne: "Development of a unified oil droplet size distribution model
@@ -1159,47 +1259,35 @@ class OpenOil(OceanDrift):
         if self.time_step.days < 0:  # Backwards simulation
             return None
 
-        z, dummy = self.get_property('z')
-        mass_oil, status = self.get_property('mass_oil')
-        density = self.get_property('density')[0][0, 0]
+        density = self.result.density[0,0].values
 
         if 'stranded' not in self.status_categories:
             self.status_categories.append('stranded')
-        mass_submerged = np.ma.masked_where(
-            ((status == self.status_categories.index('stranded')) |
-             (z == 0.0)), mass_oil)
-        mass_submerged = np.ma.sum(mass_submerged, axis=1).filled(0)
 
-        mass_surface = np.ma.masked_where(
-            ((status == self.status_categories.index('stranded')) | (z < 0.0)),
-            mass_oil)
-        mass_surface = np.ma.sum(mass_surface, axis=1).filled(0)
+        budget = {}  # Copy data to not change self.result
+        for fill in ['status', 'z', 'mass_oil', 'mass_evaporated', 'mass_dispersed', 'mass_biodegraded']:
+            budget[fill] = self.result[fill].ffill(dim='time')
 
-        mass_stranded = np.ma.sum(np.ma.masked_where(
-            status != self.status_categories.index('stranded'), mass_oil),
-                                  axis=1).filled(0)
-        mass_evaporated, status = self.get_property('mass_evaporated')
-        mass_evaporated = np.sum(mass_evaporated, axis=1).filled(0)
-        mass_dispersed, status = self.get_property('mass_dispersed')
-        mass_dispersed = np.sum(mass_dispersed, axis=1).filled(0)
-        mass_biodegraded, status = self.get_property('mass_biodegraded')
-        mass_biodegraded = np.sum(mass_biodegraded, axis=1).filled(0)
+        stranded = budget['status'] == self.status_categories.index('stranded')
+        surface = budget['z'] == 0
+
+        mass_submerged = budget['mass_oil'].where(
+            (surface == False) & (stranded == False)).sum(dim='trajectory', skipna=True)
+        mass_surface = budget['mass_oil'].where(
+            (surface == True) & (stranded == False)).sum(dim='trajectory', skipna=True)
+        mass_stranded = budget['mass_oil'].where(stranded == True).sum(dim='trajectory', skipna=True)
+        mass_evaporated = budget['mass_evaporated'].sum(dim='trajectory', skipna=True)
+        mass_dispersed = budget['mass_dispersed'].sum(dim='trajectory', skipna=True)
+        mass_biodegraded = budget['mass_biodegraded'].sum(dim='trajectory', skipna=True)
 
         oil_budget = {
-            'oil_density':
-            density,
-            'mass_dispersed':
-            mass_dispersed,
-            'mass_submerged':
-            mass_submerged,
-            'mass_surface':
-            mass_surface,
-            'mass_stranded':
-            mass_stranded,
-            'mass_evaporated':
-            mass_evaporated,
-            'mass_biodegraded':
-            mass_biodegraded,
+            'oil_density': density,
+            'mass_dispersed': mass_dispersed,
+            'mass_submerged': mass_submerged,
+            'mass_surface': mass_surface,
+            'mass_stranded': mass_stranded,#.cumsum(dim='time'),
+            'mass_evaporated': mass_evaporated,
+            'mass_biodegraded': mass_biodegraded,
             'mass_total': (mass_dispersed + mass_submerged + mass_surface +
                            mass_stranded + mass_evaporated + mass_biodegraded)
         }
@@ -1209,7 +1297,7 @@ class OpenOil(OceanDrift):
     def plot_oil_budget(self,
                         filename=None,
                         ax=None,
-                        show_density_viscosity=True,
+                        show_watercontent_and_viscosity=True,
                         show_wind_and_current=True):
 
         if self.time_step.days < 0:  # Backwards simulation
@@ -1233,13 +1321,12 @@ class OpenOil(OceanDrift):
 
         budget = np.cumsum(oil_budget, axis=0)
 
-        time, time_relative = self.get_time_array()
-        time = np.array([t.total_seconds() / 3600. for t in time_relative])
+        time = (self.result.time-self.result.time[0]).dt.total_seconds()/3600  # Hours since start
 
         if ax is None:
             # Left axis showing oil mass
             nrows = 1
-            if show_density_viscosity is True:
+            if show_watercontent_and_viscosity is True:
                 nrows = nrows + 1
             if show_wind_and_current is True:
                 nrows = nrows + 1
@@ -1251,8 +1338,8 @@ class OpenOil(OceanDrift):
                 ax1 = axs
             elif nrows >= 2:
                 ax1 = axs[0]
-                if show_density_viscosity is True:
-                    self.plot_oil_density_and_viscosity(ax=axs[1], show=False)
+                if show_watercontent_and_viscosity is True:
+                    self.plot_oil_watercontent_and_viscosity(ax=axs[1], show=False)
                 if show_wind_and_current is True:
                     self.plot_environment(ax=axs[nrows - 1], show=False)
         else:
@@ -1331,12 +1418,12 @@ class OpenOil(OceanDrift):
                    self.start_time.strftime('%Y-%m-%d %H:%M'),
                    self.time.strftime('%Y-%m-%d %H:%M')))
         # Shrink current axis's height by 10% on the bottom
-        box = ax1.get_position()
-        ax1.set_position(
-            [box.x0, box.y0 + box.height * 0.1, box.width, box.height * 0.9])
-        ax2.set_position(
-            [box.x0, box.y0 + box.height * 0.1, box.width, box.height * 0.9])
-        ax1.legend(bbox_to_anchor=(0., -0.10, 1., -0.03),
+        #box = ax1.get_position()
+        #ax1.set_position(
+        #    [box.x0, box.y0 + box.height * 0.15, box.width, box.height * 0.85])
+        #ax2.set_position(
+        #    [box.x0, box.y0 + box.height * 0.5, box.width, box.height * 0.6])
+        ax1.legend(bbox_to_anchor=(0., -0.1, 1., -0.04),
                    loc=1,
                    ncol=6,
                    mode="expand",
@@ -1356,7 +1443,7 @@ class OpenOil(OceanDrift):
 
     def cumulative_oil_entrainment_fraction(self):
         '''Returns the fraction of oil elements which has been entrained vs time'''
-        z = self.get_property('z')[0].copy()
+        z = self.result.z.copy()
         z = np.ma.masked_where(z == 0, z)
         me = np.ma.notmasked_edges(z, axis=0)
         maskfirst = me[0][0]
@@ -1368,48 +1455,49 @@ class OpenOil(OceanDrift):
         cumulative_fraction_entrained = np.sum(z, 1) / z.shape[1]
         return cumulative_fraction_entrained
 
-    def plot_oil_density_and_viscosity(self, ax=None, show=True):
+    def plot_oil_watercontent_and_viscosity(self, ax=None, show=True):
         if ax is None:
             fig, ax = plt.subplots()
         import matplotlib.dates as mdates
 
-        time, time_relative = self.get_time_array()
-        time = np.array([t.total_seconds() / 3600. for t in time_relative])
-        kin_viscosity = self.history['viscosity']
-        dyn_viscosity = kin_viscosity * self.history['density'] * 1000  # unit of mPas
-        dyn_viscosity_mean = dyn_viscosity.mean(axis=0)
-        dyn_viscosity_std = dyn_viscosity.std(axis=0)
-        density = self.history['density'].mean(axis=0)
-        density_std = self.history['density'].std(axis=0)
+        time = (self.result.time-self.result.time[0]).dt.total_seconds()/3600  # Hours since start
+        kin_viscosity = self.result.viscosity
+        dyn_viscosity = kin_viscosity * self.result.density*1000  # unit of mPas
+        dyn_viscosity_mean = dyn_viscosity.mean(dim='trajectory')
+        dyn_viscosity_std = dyn_viscosity.std(dim='trajectory')
+        density = self.result.density.mean(dim='trajectory')
+        density_std = self.result.density.std(dim='trajectory')
+        watercontent = self.result.water_fraction.mean(dim='trajectory')*100
+        watercontent_std = self.result.water_fraction.std(dim='trajectory')*100
 
         ax.plot(time,
                 dyn_viscosity_mean,
                 'g',
                 lw=2,
-                label='Dynamical viscosity')
+                label='Emulsion viscosity')
         ax.fill_between(time,
                         dyn_viscosity_mean - dyn_viscosity_std,
                         dyn_viscosity_mean + dyn_viscosity_std,
                         color='g',
                         alpha=0.5)
         ax.set_ylim([0, max(dyn_viscosity_mean + dyn_viscosity_std)])
-        ax.set_ylabel(r'Dynamical viscosity  [cPoise] / [mPas]', color='g')
+        ax.set_ylabel(r'Emulsion viscosity  [cPoise] / [mPas]', color='g')
         ax.tick_params(axis='y', colors='g')
 
         axb = ax.twinx()
-        axb.plot(time, density, 'b', lw=2, label='Density')
+        axb.plot(time, watercontent, 'b', lw=2, label='Water content')
         axb.fill_between(time,
-                         density - density_std,
-                         density + density_std,
-                         color='b',
-                         alpha=0.5)
+                         watercontent - watercontent_std,
+                         watercontent + watercontent_std,
+                         color='b', alpha=0.5)
         ax.set_xlim([0, time.max()])
         ax.set_xlabel('Time [hours]')
-        axb.set_ylabel(r'Density  [kg/m3]', color='b')
+        axb.set_ylim([0, 100])
+        axb.set_ylabel(r'Water content  [%]', color='b')
         axb.tick_params(axis='y', colors='b')
 
         ax.legend(loc='upper left')
-        axb.legend(loc='lower right')
+        axb.legend(loc='upper center')
         if show is True:
             plt.show()
 
@@ -1418,9 +1506,9 @@ class OpenOil(OceanDrift):
         Sets the oil type by specifying the name, the first match will be chosen. See the `ADIOS database <https://adios.orr.noaa.gov/oils>`_ for a list. OpenDrift provides a small set of extra oils.
         """
 
-        self.set_config('seed:oil_type', oiltype)
-        oiltype = adios.oil_name_alias.get(oiltype, oiltype)
-        logger.info(f'setting oil_type to: {oiltype}')
+        if self.get_config('seed:oil_type') != oiltype:
+            self.__set_seed_config__('seed:oil_type', oiltype)
+            logger.info(f'setting oil_type to: {oiltype}')
 
         self.oil_name = oiltype
 
@@ -1454,12 +1542,14 @@ class OpenOil(OceanDrift):
         Sets the oil type by specifing a JSON dict. The format should be the same as the ADIOS database. See the `ADIOS database <https://adios.orr.noaa.gov/oils>`_ for a list.
         """
         if self.oil_weathering_model == 'noaa':
-            o = { 'data': { 'attributes' : json } }
-            o['data']['_id'] = o['data']['attributes']['oil_id']
-            o['data']['attributes']['metadata']['location'] = 'NORWAY'
+            #o = { 'data': { 'attributes' : json } }
+            #o['data']['_id'] = o['data']['attributes']['oil_id']
+            #o['data']['attributes']['metadata']['location'] = 'Norway'
 
-            self.oiltype = adios.oil.OpendriftOil(o)
+            self.oiltype = adios.oil.OpendriftOil(json)
             self.oil_name = self.oiltype.name
+            self._config['seed:oil_type']['enum'].append(self.oil_name)
+            self.__set_seed_config__('seed:oil_type', self.oil_name)
             if not self.oiltype.valid():
                 logger.error(
                     f"{self.oiltype} is not a valid oil for Opendrift simulations"
@@ -1473,7 +1563,7 @@ class OpenOil(OceanDrift):
         Sets the oil type by specifing a JSON file. The format should be the same as the ADIOS database. See the `ADIOS database <https://adios.orr.noaa.gov/oils>`_ for a list.
 
         >>> o = OpenOil()
-        >>> o.set_oiltype_from_file('opendrift/models/openoil/adios/extra_oils/AD03128.json')
+        >>> o.set_oiltype_from_file('opendrift/models/openoil/adios/extra_oils/AD04001.json')
         """
         if self.oil_weathering_model == 'noaa':
             import json
@@ -1525,8 +1615,6 @@ class OpenOil(OceanDrift):
             kwargs['lat'] = args[1]
             args = {}
 
-        self.store_oil_seed_metadata(**kwargs)
-
         if 'number' not in kwargs:
             number = self.get_config('seed:number')
         else:
@@ -1551,32 +1639,74 @@ class OpenOil(OceanDrift):
             z = z * np.ones(number)  # Convert scalar z to array
         subsea = z < 0
         if np.sum(subsea) > 0 and 'diameter' not in kwargs:
-            # Droplet min and max for particles seeded below sea surface
-            sub_dmin = self.get_config('seed:droplet_diameter_min_subsea')
-            sub_dmax = self.get_config('seed:droplet_diameter_max_subsea')
-            logger.info('Using particle diameters between %s and %s m for '
-                        'elements seeded below sea surface.' %
-                        (sub_dmin, sub_dmax))
-            kwargs['diameter'] = np.random.uniform(sub_dmin, sub_dmax, number)
+            dsd = self.get_config('seed:droplet_size_distribution')
+            if dsd == 'uniform':
+                # Droplet min and max for particles seeded below sea surface
+                sub_dmin = self.get_config('seed:droplet_diameter_min_subsea')
+                sub_dmax = self.get_config('seed:droplet_diameter_max_subsea')
+                logger.info('Using uniform droplet size distribution between %s and %s m for '
+                            'elements seeded below sea surface.' %
+                            (sub_dmin, sub_dmax))
+                kwargs['diameter'] = np.random.uniform(sub_dmin, sub_dmax, number)
+            elif dsd == 'normal':
+                # Droplet mu and sigma for particles seeded below sea surface
+                sub_mu = self.get_config('seed:droplet_diameter_mu')
+                sub_sigma = self.get_config('seed:droplet_diameter_sigma')
+                logger.info('Using normal droplet size distribution with '
+                            'mu = %s and sigma = %s m for elements seeded below sea surface.' %
+                            (sub_mu, sub_sigma))
+                kwargs['diameter'] = np.random.normal(sub_mu, sub_sigma, number)
+            elif dsd == 'lognormal':
+                # Droplet mu and sigma for particles seeded below sea surface
+                sub_mu = self.get_config('seed:droplet_diameter_mu')
+                sub_sigma = self.get_config('seed:droplet_diameter_sigma')
+                logger.info('Using lognormal droplet size distribution with '
+                            'mu = %s and sigma = %s m for elements seeded below sea surface.' %
+                            (sub_mu, sub_sigma))
+                # From numpy.random.lognormal:
+                # "Note that the mean and standard deviation are not the values for the
+                # distribution itself, but of the underlying normal distribution it is derived from."
+                # So we need to compute the input to the function from the mean and
+                # standard deviation of the data we want to generate (assumed as input)
+                sub_sigma2 = sub_sigma**2
+                sub_sigma2_lognormal = np.log(sub_sigma2/sub_mu**2 + 1)
+                sub_mu_lognormal = np.log(sub_mu) - sub_sigma2_lognormal/2
+                sub_sigma_lognormal = sub_sigma2_lognormal**0.5
+                kwargs['diameter'] = np.random.lognormal(sub_mu_lognormal, sub_sigma_lognormal, number)
+                # check it worked
+                # print('median = '+str(np.median(kwargs['diameter'])))
+                # print('mean = '+str(np.mean(kwargs['diameter'])))
+                # print('sigma = '+str(np.std(kwargs['diameter'])))
+            else:
+                raise Exception("no valid initial subsea droplet size distribution specified")
 
         if 'oiltype' in kwargs:
-            logger.warning(
-                'Seed argument *oiltype* is deprecated, use *oil_type* instead'
-            )
-            kwargs['oil_type'] = kwargs['oiltype']
-            del kwargs['oiltype']
-
+            raise ValueError('Seed argument *oiltype* is deprecated, use *oil_type* instead')
+        
         if 'oil_type' in kwargs:
-            self.set_config('seed:oil_type', kwargs['oil_type'])
-            del kwargs['oil_type']
+            if kwargs['oil_type'] in self.oiltypes:  # oil type exists in ADIOS library
+                if self.get_config('seed:oil_type') != kwargs['oil_type']:
+                    self.__set_seed_config__('seed:oil_type', kwargs['oil_type'])
+                del kwargs['oil_type']
+                self.set_oiltype(self.get_config('seed:oil_type'))
+            elif isinstance(kwargs['oil_type'], dict):  # From json dictionary
+                self.set_oiltype_by_json(kwargs['oil_type'])
+                del kwargs['oil_type']
+            elif os.path.isfile(kwargs['oil_type']):  # From file
+                self.set_oiltype_from_file(kwargs['oil_type'])
+                del kwargs['oil_type']
+            else:  # Oil do not exist -> setting config to raise error and provide suggestions
+                self.set_config('seed:oil_type', kwargs['oil_type'])
         else:
             logger.info('Oil type not specified, using default: ' +
                         self.get_config('seed:oil_type'))
-        self.set_oiltype(self.get_config('seed:oil_type'))
+            self.set_oiltype(self.get_config('seed:oil_type'))
 
         if self.oil_weathering_model == 'noaa':
-            oil_density = self.oiltype.density_at_temp(285)
-            oil_viscosity = self.oiltype.kvis_at_temp(285)
+            self.Density = Density(self.oiltype.oil)
+            self.KinematicViscosity = KinematicViscosity(self.oiltype.oil)
+            oil_density = self.Density.at_temp(285)
+            oil_viscosity = self.KinematicViscosity.at_temp(285)
             logger.info(
                 'Using density %s and viscosity %s of oiltype %s' %
                 (oil_density, oil_viscosity, self.get_config('seed:oil_type')))
@@ -1602,6 +1732,8 @@ class OpenOil(OceanDrift):
             duration_hours = 1.  # For instantaneous spill, we use 1h
         kwargs['mass_oil'] = (m3_per_hour * duration_hours / num_elements *
                               kwargs['density'])
+
+        self.store_oil_seed_metadata(**kwargs)
 
         super(OpenOil, self).seed_elements(*args, **kwargs)
 

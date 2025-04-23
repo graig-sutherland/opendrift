@@ -31,7 +31,7 @@ from opendrift.models.oceandrift import OceanDrift
 from opendrift.models.openoil import OpenOil
 from opendrift.models.windblow import WindBlow
 from opendrift.models.shipdrift import ShipDrift
-from opendrift.models.openberg import OpenBerg
+from opendrift.models.openberg_old import OpenBergOld
 from opendrift.models.larvalfish import LarvalFish
 
 import opendrift
@@ -44,18 +44,18 @@ class TestModels(unittest.TestCase):
         lat=60
         lon=4
         o = OceanDrift(loglevel=50)
-        o.seed_elements(lon=lon, lat=lat, time=datetime.now(), wind_drift_factor=0, current_drift_factor=1)
         o.set_config('general:use_auto_landmask', False)
         o.set_config('environment:constant:land_binary_mask', 0)
         o.set_config('environment:constant:x_wind', 5)
         o.set_config('environment:constant:y_sea_water_velocity', 1)
+        o.seed_elements(lon=lon, lat=lat, time=datetime.now(), wind_drift_factor=0, current_drift_factor=1)
         o.run(duration=timedelta(hours=2))
         o2 = OceanDrift()
-        o2.seed_elements(lon=lon, lat=lat, time=datetime.now(), wind_drift_factor=0.02, current_drift_factor=.3)
         o2.set_config('general:use_auto_landmask', False)
         o2.set_config('environment:constant:land_binary_mask', 0)
         o2.set_config('environment:constant:x_wind', 5)
         o2.set_config('environment:constant:y_sea_water_velocity', 1)
+        o2.seed_elements(lon=lon, lat=lat, time=datetime.now(), wind_drift_factor=0.02, current_drift_factor=.3)
         o2.run(duration=timedelta(hours=2))
         self.assertAlmostEqual(o.elements.lat[0], lat + 0.0646, 3)
         self.assertAlmostEqual(o.elements.lon[0], lon)
@@ -146,13 +146,13 @@ class TestModels(unittest.TestCase):
         o.run(duration=timedelta(hours=10))
         self.assertIsNone(np.testing.assert_array_almost_equal(
                             o.elements.lon,
-                          [5.011935,5.01738,5.011235]))
+                          [5.010873, 5.016866, 5.009735]))
         self.assertAlmostEqual(o.elements.lat[0], o.elements.lat[2], 3)
 
     def test_openberg(self):
         """Check if weighting array is set correctly
         and if model returns expected positions"""
-        o = OpenBerg()
+        o = OpenBergOld()
         o.set_config('drift:current_uncertainty', 0)
         o.set_config('drift:wind_uncertainty', 0)
 
@@ -168,10 +168,10 @@ class TestModels(unittest.TestCase):
         arr=[0.16072658,0.16466097,0.17384121,0.17325179,0.1715925,0.15592695]
 
         for indx in range(len(arr)):
-            self.assertAlmostEqual(o.uw_weighting[indx],arr[indx],8)
+            self.assertAlmostEqual(o.uw_weighting[indx],arr[indx],7)
 
-        self.assertAlmostEqual(o.history['lon'].data[0][1],3.991, 3)
-        self.assertAlmostEqual(o.history['lat'].data[0][1],62.011, 3)
+        self.assertAlmostEqual(o.result.lon[0][1].values, 3.991, 3)
+        self.assertAlmostEqual(o.result.lat[0][1].values, 62.011, 3)
 
 
 

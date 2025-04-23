@@ -26,6 +26,7 @@ import logging; logger = logging.getLogger(__name__)
 
 from opendrift.models.basemodel import OpenDriftSimulation
 from opendrift.elements import LagrangianArray
+from opendrift.config import CONFIG_LEVEL_ESSENTIAL, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
 
 
 class ShipObject(LagrangianArray):
@@ -41,28 +42,28 @@ class ShipObject(LagrangianArray):
                          'min': 1,
                          'max': 500,
             'description': 'Length of ship',
-            'level': OpenDriftSimulation.CONFIG_LEVEL_ESSENTIAL,
+            'level': CONFIG_LEVEL_ESSENTIAL,
                          'default': 80}),
         ('height', {'dtype': np.float32,
                          'units': 'm',
                          'min': 1,
                          'max': 100,
-            'description': 'Total height of ship',
-            'level': OpenDriftSimulation.CONFIG_LEVEL_ESSENTIAL,
+            'description': 'Total height of ship (above and below waterline)',
+            'level': CONFIG_LEVEL_ESSENTIAL,
                          'default': 8}),
         ('draft', {'dtype': np.float32,  # wet part of ship [m]
                          'units': 'm',
                          'min': 1,
                          'max': 30,
             'description': 'Draft of ship (depth below water)',
-            'level': OpenDriftSimulation.CONFIG_LEVEL_ESSENTIAL,
+            'level': CONFIG_LEVEL_ESSENTIAL,
                          'default': 4.0}),
         ('beam', {'dtype': np.float32,  # width of ship
                          'min': 1,
                          'max': 70,
                          'units': 'm',
             'description': 'Beam (width) of ship',
-            'level': OpenDriftSimulation.CONFIG_LEVEL_ESSENTIAL,
+            'level': CONFIG_LEVEL_ESSENTIAL,
                          'default': 10}),
         ('wind_drag_coeff', {'dtype': np.float32,  # Cf
                              'units': '1',
@@ -97,7 +98,6 @@ class ShipDrift(OpenDriftSimulation):
         'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment': {'fallback': 0}
         }
 
-    max_speed = 2  # m/s
     winwav_angle = 20  # Angular offset in degrees
 
     def __init__(self, *args, **kwargs):
@@ -144,7 +144,7 @@ class ShipDrift(OpenDriftSimulation):
 
         self._add_config({'seed:orientation': {'type': 'enum',
             'enum':['left', 'right', 'random'], 'default': 'random',
-            'level': OpenDriftSimulation.CONFIG_LEVEL_ESSENTIAL,
+            'level': CONFIG_LEVEL_ESSENTIAL,
             'description': 'If ships are oriented to the left or right of the downwind direction,'
                 'or whether this is unknown. Left/right means that wind will hit ship from backboard/steerboard'}})
 
@@ -152,6 +152,8 @@ class ShipDrift(OpenDriftSimulation):
         # (in contrast to the Leeway model), we use a default diffusivity
         # to yield some variability.
         self._set_config_default('drift:horizontal_diffusivity', 100)
+
+        self._set_config_default('drift:max_speed', 2)
 
     def seed_elements(self, *args, **kwargs):
 
@@ -340,45 +342,3 @@ class ShipDrift(OpenDriftSimulation):
         # Stranding
         self.deactivate_elements(self.environment.land_binary_mask == 1,
                                  reason='ship stranded')
-
-    def import_ascii_format(self, filename):
-
-        with open(filename) as f:
-            lines = f.readlines()
-        self.time_step_output, self.time_step = lines[16].split()
-        num_elements = int(lines[25].split()[0])
-        if num_elements != 1:
-            raise ValueError('Import presently only supports single ship')
-        num_timesteps = (len(lines)-30.)/14.
-        num_timesteps = int(num_timesteps)
-
-        # Initialise history array
-        from datetime import datetime, timedelta
-        history_dtype_fields = [
-            (name, self.ElementType.variables[name]['dtype'])
-            for name in self.ElementType.variables]
-        # Add environment variables
-        self.history_metadata = self.ElementType.variables.copy()
-        for env_var in self.required_variables:
-            history_dtype_fields.append((env_var, np.dtype('float32')))
-            self.history_metadata[env_var] = {}
-        history_dtype = np.dtype(history_dtype_fields)
-
-        self.history = np.ma.array(
-	        np.zeros([num_elements, num_timesteps]),
-            dtype=history_dtype, mask=[True])
-
-        self.steps_output = num_timesteps
-        self.steps = num_timesteps
-        self.start_time = datetime.now()
-        self.end_time = datetime.now() + timedelta(hours=1)
-        self.time = self.end_time
-
-        # Read time steps from file
-        for i in range(num_timesteps):
-            line = lines[30 + 14*i + 13]
-            l = line.split()
-            lon = float(l[2])
-            lat = float(l[3])
-            self.history['lon'][0, i] = lon
-            self.history['lat'][0, i] = lat

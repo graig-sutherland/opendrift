@@ -33,13 +33,15 @@ o = OceanDrift(loglevel=20)
 o.set_config('drift:vertical_mixing', True)
 o.set_config('vertical_mixing:diffusivitymodel', 'environment')
 o.set_config('vertical_mixing:timestep', timestep_seconds)
+o.set_config('environment:fallback:land_binary_mask', 0)
 o.seed_elements(lon=4, lat=60, z=seed_depth, time=time, number=N, terminal_velocity=terminal_velocity)
 o.time = time
 o.time_step = timedelta(hours=hours)
 o.release_elements()
-o.set_config('environment:fallback:land_binary_mask', 0)
-o.environment = np.array(np.ones(N)*sea_floor_depth,
-                dtype=[('sea_floor_depth_below_sea_level', np.float32)]).view(np.recarray)
+o.environment = np.array(list(zip(np.ones(N)*sea_floor_depth, np.zeros(N))),
+                dtype=[('sea_floor_depth_below_sea_level', np.float32),
+                       ('sea_surface_height', np.float32)]).view(np.recarray)
+o.environment.ocean_mixed_layer_thickness = np.ones(N)*50
 o.environment_profiles = {
         'z': z,
         'ocean_vertical_diffusivity':
