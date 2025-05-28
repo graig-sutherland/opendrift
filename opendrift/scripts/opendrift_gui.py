@@ -376,7 +376,7 @@ class OpenDriftGUI(tk.Tk):
         ##########################
         try:
             img = ImageTk.PhotoImage(Image.open(
-                self.o.test_data_folder() +
+                opendrift.test_data_folder +
                                      '../../docs/opendrift_logo.png'))
             panel = tk.Label(self.seed, image=img)
             panel.image = img
@@ -787,8 +787,8 @@ class OpenDriftGUI(tk.Tk):
                     nothing
             self.o.set_config(se, val)
 
-        with files('opendrift.scripts').joinpath('data_sources.txt') as f:
-            self.o.add_readers_from_file(f)
+        forcing_file = str(files('opendrift.scripts').joinpath('data_sources.txt'))
+        self.o.add_readers_from_file(forcing_file)
 
         self.o.seed_cone(lon=lon, lat=lat, radius=radius,
                          time=start_time)#, #cone=cone,

@@ -25,8 +25,9 @@ of icebergs in the Barents Sea from 1987 to 2005, J. Geophys. Res., 115, C12062,
 """
 
 import logging; logger = logging.getLogger(__name__)
-from opendrift.models.oceandrift import OceanDrift, Lagrangian3DArray
-from opendrift.config import CONFIG_LEVEL_BASIC
+from opendrift.elements import LagrangianArray
+from opendrift.models.basemodel import OpenDriftSimulation
+from opendrift.config import CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ESSENTIAL
 from opendrift.models.physics_methods import PhysicsMethods
 from scipy.integrate import solve_ivp
 import numpy as np
@@ -44,22 +45,30 @@ wave_drag_coef = 0.3 # Wave drag coefficient
 
 
 
-class IcebergObj(Lagrangian3DArray):
+class IcebergObj(LagrangianArray):
     """ Extending Lagrangian3DArray with relevant properties for an Iceberg """
 
-    variables = Lagrangian3DArray.add_variables([
-        ('sail', {'dtype': np.float32,	           # Sail of iceberg (part above waterline)
-                               'units': 'm',
-                               'default': 10}),
-        ('draft', {'dtype': np.float32,	           # Draft of iceberg (part below waterline)
-                               'units': 'm',
-                               'default': 90}),
-        ('length', {'dtype': np.float32,	       # length of iceberg 
-                               'units': 'm',
-                               'default': 100}),
-        ('width', {'dtype': np.float32,		       # width of iceberg 
-                               'units': 'm',
-                               'default': 30}),
+    variables = LagrangianArray.add_variables([
+        ('sail', {'dtype': np.float32,
+                  'units': 'm',
+                  'default': 10,
+                  'description': 'Sail of iceberg (part above waterline)',
+                  'level': CONFIG_LEVEL_ESSENTIAL}),
+        ('draft', {'dtype': np.float32,
+                   'units': 'm',
+                   'default': 90,
+                   'description': 'Draft of iceberg (part below waterline)',
+                   'level': CONFIG_LEVEL_ESSENTIAL}),
+        ('length', {'dtype': np.float32,
+                    'units': 'm',
+                    'default': 100,
+                    'description': 'Length of iceberg',
+                    'level': CONFIG_LEVEL_ESSENTIAL}),
+        ('width', {'dtype': np.float32,
+                   'units': 'm',
+                   'default': 30,
+                   'description': 'Width of iceberg)',
+                   'level': CONFIG_LEVEL_ESSENTIAL}),
         ('weight_coeff', {'dtype': np.float32,     # Relative to the shape of iceberg (e.g. 1 for tabular; 0.3 for pinnacle: It affects the mass only !)
                               'units': '1',
                               'default': 1}),
@@ -259,7 +268,7 @@ def melbas(iceb_draft, iceb_sail, iceb_length, salnib, tempib, x_water_vel, y_wa
     return new_iceb_draft, iceb_sail
 
 
-class OpenBerg(OceanDrift):
+class OpenBerg(OpenDriftSimulation):
 
     ElementType = IcebergObj
 
@@ -269,8 +278,8 @@ class OpenBerg(OceanDrift):
         "sea_floor_depth_below_sea_level": {"fallback": 10000},
         "sea_surface_x_slope": {"fallback": 0},
         "sea_surface_y_slope": {"fallback": 0},
-        "x_wind": {"fallback": 0, "important": False},
-        "y_wind": {"fallback": 0, "important": False},
+        "x_wind": {"fallback": None, "important": True},
+        "y_wind": {"fallback": None, "important": True},
         "sea_surface_wave_significant_height": {"fallback": 0},
         "sea_surface_wave_from_direction": {"fallback": 0},
         "sea_surface_wave_stokes_drift_x_velocity": {"fallback": 0},
@@ -415,11 +424,11 @@ class OpenBerg(OceanDrift):
         
                 
         if self.get_config('drift:vertical_profile') is False:
-            logger.info("Surface Currents ...")
+            logger.debug("Advection with surface currents")
             water_vel = np.array([self.environment.x_sea_water_velocity + (int(stokes_drift) * self.environment.sea_surface_wave_stokes_drift_x_velocity),
                                   self.environment.y_sea_water_velocity + (int(stokes_drift) * self.environment.sea_surface_wave_stokes_drift_y_velocity)])
         else:
-            logger.info("Depth Integrated Currents ...")
+            logger.debug("Advection with depth integrated currents")
             uprof = self.get_profile_masked("x_sea_water_velocity")
             vprof = self.get_profile_masked("y_sea_water_velocity")
             z = self.environment_profiles["z"]
@@ -465,7 +474,8 @@ class OpenBerg(OceanDrift):
         hwall = draft - water_depth
         grounded = np.logical_and(hwall >= 0, grounding)
         if any(grounded) and grounding:
-            logger.info(f"Grounding condition : Icebergs grounded = {len(hwall[hwall>0])}, hwall={np.round(hwall[hwall>0],3)} meters")
+            logger.debug(f"Grounding condition : Icebergs grounded = {len(hwall[hwall>0])}, hwall={np.round(hwall[hwall>0],3)} meters")
+            self.elements.moving[grounded] = 0  # Grounded icebergs shall not move, also not with diffusivity
         
         sol = solve_ivp(dynamic, [0, self.time_step.total_seconds()], V0,
                         args=(water_vel, wind_vel, wave_height, wave_direction, Ao, Aa, rho_water,
@@ -528,7 +538,7 @@ class OpenBerg(OceanDrift):
         W, L = np.min([L, W], axis=0), np.max([L, W], axis=0)
         mask = (W / H) < crit
         if any(mask):
-            logger.info(f"Rolling over : {np.sum(mask)} icebergs ...")
+            logger.debug(f"Rolling over : {np.sum(mask)} icebergs ...")
             nL, nW, nH = (np.max([L[mask], H[mask]], axis=0), np.min([L[mask], H[mask]], axis=0), W[mask])
             L[mask], W[mask], H[mask] = nL, nW, nH
         depthib = H * alpha

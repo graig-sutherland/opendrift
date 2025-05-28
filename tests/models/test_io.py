@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import xarray as xr
 
+from opendrift import test_data_folder as tdf
 from opendrift.readers import reader_netCDF_CF_generic
 from opendrift.models.oceandrift import OceanDrift
 try:
@@ -51,14 +52,18 @@ def test_custom_result(tmpdir):
 
     outfile = tmpdir + "test_custom_result.nc"
     o = OceanDrift(loglevel=50)
+    time = datetime.now()
     o.prepare_run = prepare_run.__get__(o)  # Bind custom prepare_run to the instance
-    o.seed_elements(lon=4, lat=60, time=datetime.now())
+    o.seed_elements(lon=4, lat=60, time=time)
     o.run(steps=4, export_buffer_length=2, outfile=outfile)
+
     assert o.result.custom_array.shape == (3, 3)
     assert o.result.custom_scalar == 5
     assert len(o.result.custom_list) == 3
     ds = xr.open_dataset(outfile)
     assert(ds.custom_scalar == 5)
+    assert 'time_coverage_end' in o.result.attrs
+    assert 'time_coverage_end' in ds.attrs
 
 @need_fastparquet
 def test_io_parquet(tmpdir):
@@ -68,8 +73,7 @@ def test_io_parquet(tmpdir):
         iomodule="parquet",
     )
     norkyst = reader_netCDF_CF_generic.Reader(
-        o.test_data_folder()
-        + "16Nov2015_NorKyst_z_surface/norkyst800_subset_16Nov2015.nc"
+        tdf + "16Nov2015_NorKyst_z_surface/norkyst800_subset_16Nov2015.nc"
     )
     o.add_reader(norkyst)
     o.seed_elements(4.96, 60.1, radius=10, number=10, time=norkyst.start_time)
